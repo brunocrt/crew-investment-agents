@@ -30,6 +30,7 @@ from langchain_openai import ChatOpenAI
 from ..services.capex import get_capex_growth
 from ..services.pricing import get_price_spikes
 from ..services.rotation import get_sector_rotation_analysis
+from ..services.sell import get_sell_signals
 
 
 # Define custom tools using the @tool decorator.  Each tool takes a single
@@ -103,6 +104,22 @@ def rotation_tool(dummy: str = "") -> str:
     return json.dumps(payload)
 
 
+# New tool for detecting sell signals across a set of tickers
+@tool("Sell Signal Detector")
+def sell_signal_tool(tickers: str) -> str:
+    """Evaluate exit signals for a comma‑separated list of tickers.
+
+    The input should be a comma‑delimited string of stock tickers.  The
+    tool returns a JSON encoded list of dictionaries, one per ticker,
+    summarising the fundamental, technical and distribution red flags.
+    Each entry contains a ``sell_signal`` boolean indicating whether any
+    red flag triggered.
+    """
+    tickers_list: List[str] = [t.strip() for t in tickers.split(',') if t.strip()]
+    results = get_sell_signals(tickers_list)
+    return json.dumps(results)
+
+
 class InvestmentRecommendationCrew(CrewBase):
     """Crew that manages the multi‑agent stock recommendation workflow."""
 
@@ -145,7 +162,7 @@ class InvestmentRecommendationCrew(CrewBase):
     def recommendation_strategist(self) -> Agent:
         return Agent(
             config=self.agents_config['recommendation_strategist'],
-            tools=[],
+            tools=[sell_signal_tool],
             llm=self.llm,
         )
 
