@@ -25,7 +25,21 @@ from typing import List, Dict
 from crewai import Agent, Crew, Process, Task
 from crewai.project import CrewBase, agent, crew, task
 from crewai.tools import tool
-from langchain_openai import ChatOpenAI
+# Import ChatOpenAI from langchain if available.  Newer versions of LangChain
+# expose ChatOpenAI under `langchain.chat_models`.  If that import fails
+# (e.g. very old versions), fall back to the separate `langchain_openai`
+# package.  This avoids forcing a downgrade of langchain-core, which can
+# conflict with other dependencies.
+try:
+    from langchain.chat_models import ChatOpenAI  # type: ignore
+except ImportError:
+    try:
+        from langchain_openai import ChatOpenAI  # type: ignore
+    except ImportError as exc:
+        raise ImportError(
+            "ChatOpenAI could not be imported. Please install langchain>=0.1 "
+            "or langchain-openai."
+        ) from exc
 
 from ..services.capex import get_capex_growth
 from ..services.pricing import get_price_spikes
