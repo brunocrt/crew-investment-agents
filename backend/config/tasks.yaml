@@ -1,0 +1,59 @@
+capex_task:
+  description: >-
+    Research capital expenditure trends for the following tickers: {tickers}.
+    For each company, compute the percentage change in capital expenditures
+    between the latest two reporting periods using available financial data.
+    If the increase exceeds 20%, note this as a strong capex signal.
+    Present the results as a list of objects with fields: ticker,
+    latest_period, previous_period, latest_capex_mil, previous_capex_mil,
+    capex_growth_pct and a boolean flag indicating whether capex_growth_pct >= 0.20.
+  expected_output: >-
+    A JSON serialisable list of dictionaries summarising the capex analysis
+    for each ticker.  Example: [{"ticker": "GE", "capex_growth_pct": 0.25,
+    "strong_signal": true}, …]
+
+pricing_task:
+  description: >-
+    Analyse price movements of critical commodities and components.  Using
+    the default commodity tickers, calculate the percentage change in
+    closing prices over the last 30 days.  Identify any instruments whose
+    price has risen more than 5%.  Return a list of objects with fields:
+    ticker, start_date, end_date, start_price, end_price, price_change_pct
+    and a boolean flag signalling that price_change_pct >= 0.05.
+  expected_output: >-
+    A JSON serialisable list of dictionaries summarising the instruments
+    that experienced significant price increases.  Example:
+    [{"ticker": "NG=F", "price_change_pct": 0.12, "spike": true}, …]
+
+rotation_task:
+  description: >-
+    Evaluate sector performance relative to the S&P 500 over the past 30
+    days.  For each of the default sector ETFs, compute the trailing
+    return, the market return, the relative return (sector minus market),
+    and the ratio of days where the sector gained while the market was
+    down.  Rank the sectors by relative return and flag any sectors with
+    positive relative return and a defensive ratio above 0.4 as potential
+    rotation targets.
+  expected_output: >-
+    A JSON serialisable list of objects with fields: ticker, name,
+    trailing_return, market_return, relative_return, up_on_down_days_ratio,
+    and a boolean flag "rotation_signal" indicating sectors that meet both
+    positive relative return and defensive ratio criteria.
+
+recommendation_task:
+  description: >-
+    Synthesise the findings from the capex analysis ({capex_task}), the
+    pricing analysis ({pricing_task}), and the rotation analysis
+    ({rotation_task}) to generate investment recommendations.  Consider
+    companies with strong capex signals whose input commodities have spiked
+    in price and whose sectors show signs of institutional rotation.
+    Recommend either buying shares of supplier companies (e.g., turbine
+    manufacturers, transformer makers) or sector ETFs.  Provide a clear
+    rationale for each recommendation, referencing the data from earlier
+    tasks.  Also mention any risks or caveats.
+  expected_output: >-
+    A structured report comprising a summary paragraph and a list of
+    recommended tickers with ratings (e.g. "buy", "hold").  Example:
+    {"summary": "Utilities and Industrials are showing rotation…", 
+    "recommendations": [{"ticker": "ETN", "rating": "buy", "reason": "Capex
+    up 35% and commodity price spike"}, …]}
