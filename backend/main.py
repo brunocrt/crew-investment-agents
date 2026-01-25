@@ -28,6 +28,8 @@ from pydantic import BaseModel
 from .models.analysis import Analysis, LogEntry, AnalysisStatus
 from .models.base import Base, engine, get_session
 from .agents.crew import InvestmentRecommendationCrew
+from fastapi.staticfiles import StaticFiles
+import os
 
 
 logging.basicConfig(level=logging.INFO)
@@ -45,6 +47,16 @@ app.add_middleware(
 
 # Create DB tables at startup
 Base.metadata.create_all(bind=engine)
+
+# Mount the frontend static files.  The directory is located one level
+# above the backend package (../frontend).  Serving these files via
+# FastAPI allows the application to be run as a single container without
+# a separate frontend server.  Requests that do not match an API route
+# will fall back to static file handling, returning index.html for the
+# root path.
+frontend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'frontend'))
+if os.path.isdir(frontend_dir):
+    app.mount("/", StaticFiles(directory=frontend_dir, html=True), name="frontend")
 
 # In‑memory registry of active WebSocket connections per analysis id
 class ConnectionManager:
@@ -73,14 +85,29 @@ manager = ConnectionManager()
 
 
 class AnalysisCreateRequest(BaseModel):
-    tickers: List[str]
+    """Request body for creating a new analysis.
+
+    The `tickers` field is optional.  If omitted or an empty list is
+    provided, the system will fall back to a default set of candidate
+    tickers defined in `services.candidates.get_default_candidate_tickers`.
+    """
+    tickers: List[str] | None = None
 
 
 @app.post("/analyses", status_code=201)
 async def create_analysis(request: AnalysisCreateRequest, background_tasks: BackgroundTasks):
     """Kick off a new analysis for the supplied tickers."""
-    tickers = request.tickers
-    tickers_str = ",".join(tickers)
+    # Determine which tickers to use.  If the request body omits them or
+    # provides an empty list, fall back to default candidates for
+    # monitoring mode.
+    from .services.candidates import get_default_candidate_tickers
+
+    tickers_list: List[str]
+    if not request.tickers:
+        tickers_list = get_default_candidate_tickers()
+    else:
+        tickers_list = request.tickers
+    tickers_str = ",".join(tickers_list)
     # Create analysis record
     with get_session() as db:
         analysis = Analysis(ticker=tickers_str, status=AnalysisStatus.RUNNING)

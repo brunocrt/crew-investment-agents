@@ -44,16 +44,26 @@ recommendation_task:
   description: >-
     Synthesise the findings from the capex analysis ({capex_task}), the
     pricing analysis ({pricing_task}), and the rotation analysis
-    ({rotation_task}) to generate investment recommendations.  Consider
-    companies with strong capex signals whose input commodities have spiked
-    in price and whose sectors show signs of institutional rotation.
-    Recommend either buying shares of supplier companies (e.g., turbine
-    manufacturers, transformer makers) or sector ETFs.  Provide a clear
-    rationale for each recommendation, referencing the data from earlier
-    tasks.  Also mention any risks or caveats.
+    ({rotation_task}) to generate investment recommendations.  In addition
+    to identifying attractive opportunities, evaluate exit signals by
+    invoking the Sell Signal Detector on the same list of tickers.  If
+    the sell detector reports any "red flags" for a company—such as a
+    fundamental peak, technical exhaustion, or a distribution cluster—
+    prioritise capital preservation by assigning a "sell" rating and
+    provide a rationale describing which red flag was triggered.  For
+    companies with strong capex signals whose input commodities have
+    spiked and whose sectors show signs of institutional rotation, assign
+    a "buy" rating with justification.  If signals are mixed, assign
+    "hold".  Always cite the data from earlier tasks and explain any
+    risks or caveats.
   expected_output: >-
     A structured report comprising a summary paragraph and a list of
-    recommended tickers with ratings (e.g. "buy", "hold").  Example:
-    {"summary": "Utilities and Industrials are showing rotation…", 
-    "recommendations": [{"ticker": "ETN", "rating": "buy", "reason": "Capex
-    up 35% and commodity price spike"}, …]}
+    recommended tickers with ratings ("buy", "hold" or "sell").  Example:
+    {"summary": "Utilities and Industrials are showing rotation but GE
+    exhibits inventory build‑up…", 
+    "recommendations": [
+      {"ticker": "ETN", "rating": "buy", "reason": "Capex up 35%, commodity
+      price spike, no red flags"},
+      {"ticker": "GE", "rating": "sell", "reason": "Inventory growth far
+      outpaces revenue and RSI divergence"}
+    ]}

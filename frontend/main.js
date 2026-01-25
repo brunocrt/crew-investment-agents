@@ -1,6 +1,19 @@
 // Simple frontend script to fetch analyses, show stats, and stream logs.
 
-const API_BASE = "http://localhost:8000";
+// Dynamically determine the API base URL.  When running via docker-compose,
+// the frontend is served on a different port (e.g. 3000) than the backend.
+// This helper replaces the current window's port with 8000 so that API
+// requests target the backend container.  For example, if the page is
+// loaded from http://localhost:3000, the API base becomes http://localhost:8000.
+const API_BASE = (() => {
+  try {
+    const url = new URL(window.location.href);
+    url.port = "8000";
+    return url.origin;
+  } catch (e) {
+    return "http://localhost:8000";
+  }
+})();
 
 async function fetchAnalyses() {
   const res = await fetch(`${API_BASE}/analyses`);
@@ -117,6 +130,23 @@ async function newAnalysis() {
 }
 
 document.getElementById("new-analysis-btn").addEventListener("click", newAnalysis);
+
+// Launch monitoring mode without specifying tickers
+async function startMonitoring() {
+  const res = await fetch(`${API_BASE}/analyses`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tickers: [] }),
+  });
+  const data = await res.json();
+  // Refresh list and auto-select new analysis
+  setTimeout(refresh, 500);
+  if (data.analysis_id) {
+    setTimeout(() => selectAnalysis(data.analysis_id), 1000);
+  }
+}
+
+document.getElementById("monitor-btn").addEventListener("click", startMonitoring);
 
 // Initial load
 refresh();

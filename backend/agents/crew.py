@@ -25,11 +25,26 @@ from typing import List, Dict
 from crewai import Agent, Crew, Process, Task
 from crewai.project import CrewBase, agent, crew, task
 from crewai.tools import tool
-from langchain_openai import ChatOpenAI
+# Import ChatOpenAI from langchain if available.  Newer versions of LangChain
+# expose ChatOpenAI under `langchain.chat_models`.  If that import fails
+# (e.g. very old versions), fall back to the separate `langchain_openai`
+# package.  This avoids forcing a downgrade of langchain-core, which can
+# conflict with other dependencies.
+try:
+    from langchain.chat_models import ChatOpenAI  # type: ignore
+except ImportError:
+    try:
+        from langchain_openai import ChatOpenAI  # type: ignore
+    except ImportError as exc:
+        raise ImportError(
+            "ChatOpenAI could not be imported. Please install langchain>=0.1 "
+            "or langchain-openai."
+        ) from exc
 
 from ..services.capex import get_capex_growth
 from ..services.pricing import get_price_spikes
 from ..services.rotation import get_sector_rotation_analysis
+from ..services.sell import get_sell_signals
 
 
 # Define custom tools using the @tool decorator.  Each tool takes a single
@@ -103,7 +118,24 @@ def rotation_tool(dummy: str = "") -> str:
     return json.dumps(payload)
 
 
-class InvestmentRecommendationCrew(CrewBase):
+# New tool for detecting sell signals across a set of tickers
+@tool("Sell Signal Detector")
+def sell_signal_tool(tickers: str) -> str:
+    """Evaluate exit signals for a comma‑separated list of tickers.
+
+    The input should be a comma‑delimited string of stock tickers.  The
+    tool returns a JSON encoded list of dictionaries, one per ticker,
+    summarising the fundamental, technical and distribution red flags.
+    Each entry contains a ``sell_signal`` boolean indicating whether any
+    red flag triggered.
+    """
+    tickers_list: List[str] = [t.strip() for t in tickers.split(',') if t.strip()]
+    results = get_sell_signals(tickers_list)
+    return json.dumps(results)
+
+
+@CrewBase
+class InvestmentRecommendationCrew:
     """Crew that manages the multi‑agent stock recommendation workflow."""
 
     # Paths relative to the backend package
@@ -145,7 +177,7 @@ class InvestmentRecommendationCrew(CrewBase):
     def recommendation_strategist(self) -> Agent:
         return Agent(
             config=self.agents_config['recommendation_strategist'],
-            tools=[],
+            tools=[sell_signal_tool],
             llm=self.llm,
         )
 
