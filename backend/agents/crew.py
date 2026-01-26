@@ -25,11 +25,18 @@ from typing import List, Dict
 from crewai import Agent, Crew, Process, Task
 from crewai.project import CrewBase, agent, crew, task
 from crewai.tools import tool
-from langchain_openai import ChatOpenAI
+# CrewAI delegates model connectivity to LiteLLM behind the scenes.  To
+# configure a model for your agents, you can either provide a string
+# identifier (e.g., ``"gpt-4-turbo"``) or instantiate the built‑in
+# ``LLM`` class.  Using ``LLM`` allows you to customise parameters such
+# as temperature and base URL without pulling in heavy dependencies from
+# LangChain.  See the CrewAI documentation for more details【783991777702297†L207-L263】.
+from crewai import LLM  # type: ignore
 
 from ..services.capex import get_capex_growth
 from ..services.pricing import get_price_spikes
 from ..services.rotation import get_sector_rotation_analysis
+from ..services.sell import get_sell_signals
 
 
 # Define custom tools using the @tool decorator.  Each tool takes a single
@@ -103,7 +110,24 @@ def rotation_tool(dummy: str = "") -> str:
     return json.dumps(payload)
 
 
-class InvestmentRecommendationCrew(CrewBase):
+# New tool for detecting sell signals across a set of tickers
+@tool("Sell Signal Detector")
+def sell_signal_tool(tickers: str) -> str:
+    """Evaluate exit signals for a comma‑separated list of tickers.
+
+    The input should be a comma‑delimited string of stock tickers.  The
+    tool returns a JSON encoded list of dictionaries, one per ticker,
+    summarising the fundamental, technical and distribution red flags.
+    Each entry contains a ``sell_signal`` boolean indicating whether any
+    red flag triggered.
+    """
+    tickers_list: List[str] = [t.strip() for t in tickers.split(',') if t.strip()]
+    results = get_sell_signals(tickers_list)
+    return json.dumps(results)
+
+
+@CrewBase
+class InvestmentRecommendationCrew:
     """Crew that manages the multi‑agent stock recommendation workflow."""
 
     # Paths relative to the backend package
@@ -111,10 +135,22 @@ class InvestmentRecommendationCrew(CrewBase):
     tasks_config = 'backend/config/tasks.yaml'
 
     def __init__(self) -> None:
-        # Initialize the underlying ChatOpenAI LLM
-        model_name = os.getenv('OPENAI_MODEL', 'gpt-4-turbo')
+        # Initialise the underlying language model.  Instead of relying on
+        # LangChain’s ``ChatOpenAI``, use CrewAI’s built‑in ``LLM`` class,
+        # which routes requests through LiteLLM.  This avoids dependency
+        # conflicts with ``langchain`` and works out‑of‑the‑box in the
+        # container environment.  The model name and temperature can be
+        # customised via environment variables.  If you need to use a
+        # non‑OpenAI provider or a custom API endpoint, specify
+        # ``OPENAI_API_BASE`` in your environment or pass ``base_url`` when
+        # constructing the LLM.
+        model_name = os.getenv('OPENAI_MODEL', os.getenv('OPENAI_MODEL_NAME', 'gpt-4-turbo'))
         temperature = float(os.getenv('OPENAI_TEMPERATURE', '0.3'))
-        self.llm = ChatOpenAI(model_name=model_name, temperature=temperature)
+        # When the OPENAI_API_KEY is set in the environment, LiteLLM will
+        # automatically authenticate requests.  Additional parameters such
+        # as ``base_url`` may be provided via environment variables (e.g.
+        # OPENAI_API_BASE) if you are using a custom endpoint.
+        self.llm = LLM(model=model_name, temperature=temperature)
 
     # Define agents.  Each agent uses a particular tool relevant to its role.
     @agent
@@ -145,7 +181,7 @@ class InvestmentRecommendationCrew(CrewBase):
     def recommendation_strategist(self) -> Agent:
         return Agent(
             config=self.agents_config['recommendation_strategist'],
-            tools=[],
+            tools=[sell_signal_tool],
             llm=self.llm,
         )
 

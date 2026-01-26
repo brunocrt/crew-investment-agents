@@ -1,0 +1,26 @@
+version: "3.9"
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      # Forward relevant environment variables to the container.  The OPENAI_API_KEY
+      # can be set in a .env file alongside this docker-compose.yml.
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4-turbo}
+      - OPENAI_TEMPERATURE=${OPENAI_TEMPERATURE:-0.3}
+  frontend:
+    image: nginx:alpine
+    ports:
+      - "3000:80"
+    volumes:
+      # Serve the frontend files via Nginx.  The :ro flag mounts the directory
+      # as read-only.  Adjust the path if you move the frontend directory.
+      - ./frontend:/usr/share/nginx/html:ro
+    depends_on:
+      - backend
