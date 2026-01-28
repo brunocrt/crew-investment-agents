@@ -42,18 +42,45 @@ rotation_task:
 
 recommendation_task:
   description: >-
-    Synthesise the findings from the capex analysis ({capex_task}), the
-    pricing analysis ({pricing_task}), and the rotation analysis
-    ({rotation_task}) to generate investment recommendations.  Consider
-    companies with strong capex signals whose input commodities have spiked
-    in price and whose sectors show signs of institutional rotation.
-    Recommend either buying shares of supplier companies (e.g., turbine
-    manufacturers, transformer makers) or sector ETFs.  Provide a clear
-    rationale for each recommendation, referencing the data from earlier
-    tasks.  Also mention any risks or caveats.
+    Synthesise the findings from the capex, pricing and rotation analyses
+    to produce stock‑specific investment recommendations.  The primary
+    goal is to surface attractive **buy** candidates because the user
+    currently holds no positions.  Use the following guidance:
+
+    * Treat price spikes in commodities and sector rotation signals as
+      indicators of tightening supply or shifting institutional flows, but
+      **do not** pass those commodity tickers (e.g. futures like HG=F) into
+      the Sell Signal Detector.  The sell detector should only be run
+      against the input stock tickers (e.g. GE, ETN, CMI, etc.).
+
+    * A "buy" recommendation should be issued for a stock when it shows
+      strong capex growth (capex up 20%+), its input commodities have
+      experienced significant price spikes, and its sector exhibits
+      outperformance with defensive characteristics.  Provide a concise
+      justification citing the signals.
+
+    * A "hold" or "sell" rating should **only** be issued for a stock
+      after it has previously been recommended for purchase and now
+      triggers a red flag (fundamental peak, technical exhaustion or
+      distribution cluster) via the Sell Signal Detector.  In monitoring
+      mode (initial analysis), avoid assigning hold or sell to a stock
+      unless a compelling red flag is present.
+
+    Always cite the quantitative data from the earlier analyses (capex
+    growth percentages, price change percentages, relative returns,
+    defensive ratios) and clearly explain the rationale for each
+    recommendation.  Present your output as a JSON object with a
+    "summary" field and a "recommendations" list.  Each entry in the
+    recommendations list should include the ticker, a rating (buy, hold or
+    sell) and a brief reason.
   expected_output: >-
     A structured report comprising a summary paragraph and a list of
-    recommended tickers with ratings (e.g. "buy", "hold").  Example:
-    {"summary": "Utilities and Industrials are showing rotation…", 
-    "recommendations": [{"ticker": "ETN", "rating": "buy", "reason": "Capex
-    up 35% and commodity price spike"}, …]}
+    recommended tickers with ratings ("buy", "hold" or "sell").  Example:
+    {"summary": "Utilities and Industrials are showing rotation but GE
+    exhibits inventory build‑up…", 
+    "recommendations": [
+      {"ticker": "ETN", "rating": "buy", "reason": "Capex up 35%, commodity
+      price spike, no red flags"},
+      {"ticker": "GE", "rating": "sell", "reason": "Inventory growth far
+      outpaces revenue and RSI divergence"}
+    ]}

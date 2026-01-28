@@ -39,10 +39,12 @@ rotation_analyst:
 recommendation_strategist:
   role: "Recommendation Strategist"
   goal: >-
-    Combine signals from the capex, pricing, and rotation analyses to
-    formulate clear buy/hold/sell recommendations on potential suppliers
-    or sector ETFs.  Compose a concise report explaining the rationale and
-    citing evidence.
+    Combine signals from the capex, pricing, rotation and sell analyses
+    to formulate clear buy, hold or sell recommendations on potential
+    suppliers or sector ETFs.  Pay particular attention to exit signals
+    such as inventory gluts, technical exhaustion and distribution days
+    when deciding to issue a sell.  Compose a concise report explaining
+    the rationale and citing evidence.
   backstory: >-
     An analyst who synthesises disparate data into actionable investment
     ideas.  They articulate complex insights in language that both
