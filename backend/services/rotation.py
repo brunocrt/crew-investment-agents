@@ -80,11 +80,33 @@ def get_sector_rotation_analysis(
     sector_map = sectors or DEFAULT_SECTOR_ETFS
     all_tickers = list(sector_map.keys()) + [MARKET_TICKER]
     try:
-        data = yf.download(all_tickers, period=f"{lookback_days + 5}d")['Adj Close']
+        # Download recent price data.  When multiple tickers are requested,
+        # yfinance returns a DataFrame with a MultiIndex on the columns where
+        # the first level contains field names (e.g., "Open", "Close", "Adj Close")
+        # and the second level contains the ticker symbols.  Some instruments
+        # may not provide an "Adj Close" series; in that case, fall back to
+        # using the regular closing prices.
+        raw = yf.download(all_tickers, period=f"{lookback_days + 5}d")
+        data = None
+        # MultiIndex case: top level fields and second level tickers
+        if isinstance(raw.columns, pd.MultiIndex):
+            top_levels = list(raw.columns.levels[0])
+            if 'Adj Close' in top_levels:
+                data = raw['Adj Close']
+            elif 'Close' in top_levels:
+                data = raw['Close']
+        else:
+            # Single ticker case
+            if 'Adj Close' in raw.columns:
+                data = raw['Adj Close']
+            elif 'Close' in raw.columns:
+                data = raw['Close']
+        if data is None:
+            raise KeyError('Adj Close series not found for the downloaded tickers')
         # Align and drop rows with any NaNs
         data = data.dropna(how='any')
     except Exception as exc:
-        logger.exception("Error downloading sector data: %s", exc)
+        logger.exception('Error downloading sector data: %s', exc)
         return []
     # Compute daily returns
     returns = data.pct_change().dropna()

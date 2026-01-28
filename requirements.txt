@@ -1,7 +1,10 @@
 fastapi>=0.110
 uvicorn[standard]>=0.27
 crewai>=1.8.0
-langchain>=0.1.9
+# LangChain is no longer a direct dependency because CrewAI’s ``LLM`` class
+# handles model connectivity via LiteLLM.  Removing langchain avoids
+# conflicts with other packages (e.g. langgraph).  If you need
+# LangChain features, install it separately at a compatible version.
 sqlalchemy>=2.0
 pydantic>=2.1
 yfinance>=0.2.36

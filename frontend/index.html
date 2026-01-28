@@ -28,8 +28,29 @@
           <h2 class="text-3xl font-bold">Financial Dashboard</h2>
           <p class="text-gray-400">Monitor your analyses and agents</p>
         </div>
-        <button id="new-analysis-btn" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded">New Analysis</button>
+        <div class="flex space-x-2">
+          <button id="new-analysis-btn" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded">New Analysis</button>
+          <button id="monitor-btn" class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded">Monitor Reports</button>
+        </div>
       </header>
+      <!-- Portfolio Section -->
+      <section>
+        <h3 class="text-xl font-semibold mb-2">Portfolio</h3>
+        <div id="portfolio-section" class="bg-gray-800 p-4 rounded flex flex-col space-y-2 sm:flex-row sm:space-y-0 sm:space-x-4">
+          <div class="flex flex-col flex-1">
+            <label for="available-balance" class="text-sm text-gray-400">Available Balance ($)</label>
+            <input id="available-balance" type="number" step="0.01" class="bg-gray-700 p-2 rounded text-white" />
+          </div>
+          <div class="flex flex-col flex-1">
+            <label for="invested-balance" class="text-sm text-gray-400">Invested Amount ($)</label>
+            <input id="invested-balance" type="number" step="0.01" class="bg-gray-700 p-2 rounded text-white" disabled />
+          </div>
+          <div class="flex items-end">
+            <button id="save-portfolio-btn" class="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded">Save Portfolio</button>
+          </div>
+        </div>
+      </section>
+
       <!-- Stats Cards -->
       <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4" id="stats-container">
         <!-- Cards inserted dynamically -->
@@ -46,6 +67,42 @@
         <h3 class="text-xl font-semibold mb-2">Agent Logs</h3>
         <div id="logs-console" class="h-48 overflow-y-scroll bg-gray-800 p-4 rounded font-mono text-sm"></div>
       </section>
+
+      <!-- Analysis Report -->
+      <section class="mt-6">
+        <h3 class="text-xl font-semibold mb-2">Analysis Report</h3>
+        <div id="report-summary" class="p-4 bg-gray-800 rounded text-sm whitespace-pre-wrap"></div>
+        <div id="recommendations" class="p-4 bg-gray-800 rounded mt-4"></div>
+      </section>
+    </div>
+        <!-- Trade Execution Modal -->
+    <div id="trade-modal" class="fixed inset-0 flex items-center justify-center bg-black bg-opacity-50 hidden">
+      <div class="bg-gray-900 p-6 rounded w-full max-w-md space-y-4">
+        <h3 id="trade-title" class="text-xl font-semibold">Execute Trade</h3>
+        <p id="trade-description" class="text-gray-300 text-sm"></p>
+        <div class="flex flex-col space-y-2">
+          <div class="flex flex-col">
+            <label class="text-sm text-gray-400">Shares</label>
+            <input id="trade-shares" type="number" class="bg-gray-700 p-2 rounded text-white" />
+          </div>
+          <div class="flex flex-col">
+            <label class="text-sm text-gray-400">Stop Loss Price ($)</label>
+            <input id="trade-stoploss" type="number" class="bg-gray-700 p-2 rounded text-white" />
+          </div>
+          <div class="flex flex-col">
+            <label class="text-sm text-gray-400">Target Price ($)</label>
+            <input id="trade-target" type="number" class="bg-gray-700 p-2 rounded text-white" />
+          </div>
+          <div class="flex flex-col">
+            <label class="text-sm text-gray-400">Projected Gain</label>
+            <p id="trade-projected" class="text-green-300 text-sm"></p>
+          </div>
+          <div class="flex items-center justify-end space-x-3">
+            <button id="trade-cancel-btn" class="bg-gray-600 hover:bg-gray-500 text-white px-4 py-2 rounded">Cancel</button>
+            <button id="trade-confirm-btn" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded">Confirm</button>
+          </div>
+        </div>
+      </div>
     </div>
     <script src="./main.js"></script>
   </body>

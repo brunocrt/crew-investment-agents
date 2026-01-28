@@ -28,6 +28,8 @@ from pydantic import BaseModel
 from .models.analysis import Analysis, LogEntry, AnalysisStatus
 from .models.base import Base, engine, get_session
 from .agents.crew import InvestmentRecommendationCrew
+from fastapi.staticfiles import StaticFiles
+import os
 
 
 logging.basicConfig(level=logging.INFO)
@@ -45,6 +47,12 @@ app.add_middleware(
 
 # Create DB tables at startup
 Base.metadata.create_all(bind=engine)
+
+# We'll mount the frontend static files after declaring API routes to ensure
+# that API endpoints like `/analyses` take precedence.  If we mount the
+# static files at the root before defining routes, requests to paths such
+# as `/analyses` would be handled by the static file server and return 404.
+frontend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'frontend'))
 
 # In‑memory registry of active WebSocket connections per analysis id
 class ConnectionManager:
@@ -73,14 +81,29 @@ manager = ConnectionManager()
 
 
 class AnalysisCreateRequest(BaseModel):
-    tickers: List[str]
+    """Request body for creating a new analysis.
+
+    The `tickers` field is optional.  If omitted or an empty list is
+    provided, the system will fall back to a default set of candidate
+    tickers defined in `services.candidates.get_default_candidate_tickers`.
+    """
+    tickers: List[str] | None = None
 
 
 @app.post("/analyses", status_code=201)
 async def create_analysis(request: AnalysisCreateRequest, background_tasks: BackgroundTasks):
     """Kick off a new analysis for the supplied tickers."""
-    tickers = request.tickers
-    tickers_str = ",".join(tickers)
+    # Determine which tickers to use.  If the request body omits them or
+    # provides an empty list, fall back to default candidates for
+    # monitoring mode.
+    from .services.candidates import get_default_candidate_tickers
+
+    tickers_list: List[str]
+    if not request.tickers:
+        tickers_list = get_default_candidate_tickers()
+    else:
+        tickers_list = request.tickers
+    tickers_str = ",".join(tickers_list)
     # Create analysis record
     with get_session() as db:
         analysis = Analysis(ticker=tickers_str, status=AnalysisStatus.RUNNING)
@@ -174,25 +197,58 @@ async def run_analysis(analysis_id: str, tickers_str: str) -> None:
     sys.stdout = log_buffer
     try:
         result = crew.kickoff(inputs={"tickers": tickers_str})
-        output_summary = result
+        # The result returned by CrewAI may be a raw string or a CrewOutput
+        # object with a ``raw`` attribute.  Convert it to a string so it
+        # can be persisted in the database and parsed as JSON.  If it's
+        # already a plain string, use it directly.
+        if hasattr(result, "raw"):
+            result_str = result.raw
+        else:
+            # For non‑string types, fall back to the string representation
+            result_str = result if isinstance(result, str) else str(result)
         # After execution, update analysis with summary and recommendation
         with get_session() as db:
             analysis = db.query(Analysis).filter_by(id=analysis_id).first()
             if analysis:
                 analysis.status = AnalysisStatus.COMPLETED
-                # result is typically a string produced by the last task's output
-                # We'll attempt to parse JSON if available
+                # Attempt to parse JSON output.  If parsing fails, store
+                # the raw string as the summary.
                 try:
-                    parsed = json.loads(result)
-                    analysis.summary = parsed.get('summary', result)
-                    # Create a simple recommendation string
+                    parsed = json.loads(result_str)
+                    # Before saving, enrich each recommendation with price
+                    # information (current price and percent change) and a
+                    # timestamp.  This provides additional context in the
+                    # report for investors.  Use a helper from
+                    # services.price_info.  Wrap in a try/except to avoid
+                    # blocking if the price lookup fails.
+                    from .services.price_info import get_stock_price_info
+                    from datetime import datetime
                     recs = parsed.get('recommendations', [])
+                    for rec in recs:
+                        ticker = rec.get('ticker')
+                        if ticker:
+                            info = get_stock_price_info(ticker)
+                            if info:
+                                rec['current_price'] = info.get('current_price')
+                                rec['percent_change'] = info.get('percent_change')
+                            # attach a report timestamp in ISO format
+                            rec['report_time'] = datetime.utcnow().isoformat()
+                    # Persist the updated JSON object as a string so the
+                    # frontend can access summary, reasons and price info.
+                    updated_result_str = json.dumps(parsed)
+                    analysis.summary = updated_result_str
+                    # Create a simple aggregated recommendation string for
+                    # quick display in the analyses list.  Include the
+                    # rating only; the detailed reasons will be parsed
+                    # client‑side from the summary.
                     if recs:
                         analysis.recommendation = ", ".join(
-                            f"{r['ticker']}: {r['rating']}" for r in recs
+                            f"{r.get('ticker')}: {r.get('rating')}" for r in recs
                         )
+                    else:
+                        analysis.recommendation = None
                 except Exception:
-                    analysis.summary = result
+                    analysis.summary = result_str
                     analysis.recommendation = None
             db.flush()
     except Exception as exc:
@@ -218,3 +274,22 @@ async def run_analysis(analysis_id: str, tickers_str: str) -> None:
                 # Broadcast to WebSocket subscribers
                 asyncio.create_task(manager.broadcast(analysis_id, msg))
         log_buffer.close()
+
+# Delete an analysis and its logs
+@app.delete("/analyses/{analysis_id}")
+async def delete_analysis_endpoint(analysis_id: str):
+    """Remove an analysis record and all associated logs."""
+    with get_session() as db:
+        # Delete logs first to maintain referential integrity
+        db.query(LogEntry).filter_by(analysis_id=analysis_id).delete()
+        # Delete the analysis record
+        deleted = db.query(Analysis).filter_by(id=analysis_id).delete()
+        db.flush()
+    return {"deleted": bool(deleted)}
+
+# After defining all API routes, mount the frontend static files.  This
+# placement ensures that API endpoints are matched first.  Any request
+# that doesn't match an API route will be served from the frontend
+# directory, with `index.html` acting as a fallback for SPA routing.
+if os.path.isdir(frontend_dir):
+    app.mount("/", StaticFiles(directory=frontend_dir, html=True), name="frontend")
