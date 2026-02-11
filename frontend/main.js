@@ -15,115 +15,6 @@ const API_BASE = (() => {
   }
 })();
 
-
-// ----- Portfolio Management -----
-// Portfolio state is persisted in localStorage under the key 'portfolio'.
-// The portfolio contains an available cash balance and an invested amount.
-let portfolio = { available: 10000, invested: 0 };
-
-function loadPortfolio() {
-  const saved = localStorage.getItem('portfolio');
-  if (saved) {
-    try {
-      const obj = JSON.parse(saved);
-      if (typeof obj.available === 'number' && typeof obj.invested === 'number') {
-        portfolio = obj;
-      }
-    } catch {}
-  }
-  const availEl = document.getElementById('available-balance');
-  const investedEl = document.getElementById('invested-balance');
-  if (availEl) availEl.value = portfolio.available.toFixed(2);
-  if (investedEl) investedEl.value = portfolio.invested.toFixed(2);
-}
-
-function savePortfolio() {
-  const availEl = document.getElementById('available-balance');
-  const investedEl = document.getElementById('invested-balance');
-  let avail = parseFloat(availEl?.value);
-  let invested = parseFloat(investedEl?.value);
-  if (isNaN(avail)) avail = portfolio.available;
-  if (isNaN(invested)) invested = portfolio.invested;
-  portfolio.available = avail;
-  portfolio.invested = invested;
-  localStorage.setItem('portfolio', JSON.stringify(portfolio));
-  if (availEl) availEl.value = portfolio.available.toFixed(2);
-  if (investedEl) investedEl.value = portfolio.invested.toFixed(2);
-}
-
-function openTradeModal(rec) {
-  const modal = document.getElementById('trade-modal');
-  if (!modal) return;
-  const titleEl = document.getElementById('trade-title');
-  const descEl = document.getElementById('trade-description');
-  const sharesEl = document.getElementById('trade-shares');
-  const stopLossEl = document.getElementById('trade-stoploss');
-  const targetEl = document.getElementById('trade-target');
-  const projEl = document.getElementById('trade-projected');
-  const ticker = rec.ticker;
-  const price = rec.current_price || 0;
-  const tradeType = (rec.rating || '').toLowerCase() === 'sell' ? 'Sell' : 'Buy';
-  titleEl.textContent = `${tradeType} ${ticker}`;
-  const investAmount = portfolio.available * 0.05;
-  let shares = price > 0 ? Math.floor(investAmount / price) : 0;
-  if (shares < 1) shares = 1;
-  const stopLoss = price * 0.9;
-  const target = price * 1.2;
-  const dividendYield = 0.02;
-  const projected = (target - price) * shares + dividendYield * price * shares;
-  descEl.textContent = `Current price: $${price.toFixed(2)} | Available cash: $${portfolio.available.toFixed(2)}`;
-  sharesEl.value = shares;
-  stopLossEl.value = stopLoss.toFixed(2);
-  targetEl.value = target.toFixed(2);
-  projEl.textContent = `$${projected.toFixed(2)}`;
-  modal.dataset.ticker = ticker;
-  modal.dataset.price = price;
-  modal.dataset.tradeType = tradeType.toLowerCase();
-  modal.classList.remove('hidden');
-}
-
-function confirmTrade() {
-  const modal = document.getElementById('trade-modal');
-  const shares = parseInt(document.getElementById('trade-shares').value, 10);
-  const price = parseFloat(modal.dataset.price || '0');
-  const type = modal.dataset.tradeType;
-  if (isNaN(shares) || shares <= 0 || price <= 0) {
-    modal.classList.add('hidden');
-    return;
-  }
-  const cost = shares * price;
-  if (type === 'sell') {
-    portfolio.available += cost;
-    portfolio.invested -= cost;
-  } else {
-    portfolio.available -= cost;
-    portfolio.invested += cost;
-  }
-  if (portfolio.available < 0) portfolio.available = 0;
-  if (portfolio.invested < 0) portfolio.invested = 0;
-  localStorage.setItem('portfolio', JSON.stringify(portfolio));
-  const availEl = document.getElementById('available-balance');
-  const investedEl = document.getElementById('invested-balance');
-  if (availEl) availEl.value = portfolio.available.toFixed(2);
-  if (investedEl) investedEl.value = portfolio.invested.toFixed(2);
-  modal.classList.add('hidden');
-}
-
-function cancelTrade() {
-  const modal = document.getElementById('trade-modal');
-  if (modal) modal.classList.add('hidden');
-}
-
-document.addEventListener('DOMContentLoaded', () => {
-  loadPortfolio();
-  const saveBtn = document.getElementById('save-portfolio-btn');
-  if (saveBtn) saveBtn.addEventListener('click', savePortfolio);
-  const cancelBtn = document.getElementById('trade-cancel-btn');
-  if (cancelBtn) cancelBtn.addEventListener('click', cancelTrade);
-  const confirmBtn = document.getElementById('trade-confirm-btn');
-  if (confirmBtn) confirmBtn.addEventListener('click', confirmTrade);
-});
-// ----- End Portfolio Management -----
 async function fetchAnalyses() {
   const res = await fetch(`${API_BASE}/analyses`);
   const data = await res.json();
@@ -138,6 +29,34 @@ function timeAgo(timestamp) {
   if (hours < 24) return `${hours}h ago`;
   const days = Math.floor(hours / 24);
   return `${days}d ago`;
+}
+
+// Portfolio management
+function loadPortfolio() {
+  const stored = localStorage.getItem("portfolio");
+  let portfolio;
+  if (stored) {
+    try {
+      portfolio = JSON.parse(stored);
+    } catch (e) {
+      portfolio = null;
+    }
+  }
+  if (!portfolio) {
+    portfolio = { available: 10000, invested: 0 };
+  }
+  return portfolio;
+}
+
+function savePortfolio(portfolio) {
+  localStorage.setItem("portfolio", JSON.stringify(portfolio));
+}
+
+function updatePortfolioUI(portfolio) {
+  const availInput = document.getElementById("available-balance");
+  const investedInput = document.getElementById("invested-amount");
+  if (availInput) availInput.value = portfolio.available.toFixed(2);
+  if (investedInput) investedInput.value = portfolio.invested.toFixed(2);
 }
 
 function renderStats(analyses) {
@@ -297,34 +216,29 @@ async function displayReport(analysisId) {
         <th class="px-2 py-1 border-b">% Change (30d)</th>
         <th class="px-2 py-1 border-b">Report Time</th>
         <th class="px-2 py-1 border-b">Reason</th>
-        <th class="px-2 py-1 border-b">Action</th>
       </tr>`;
       table.appendChild(thead);
       const tbody = document.createElement("tbody");
       recs.forEach((rec) => {
-        const tr = document.createElement('tr');
+        const tr = document.createElement("tr");
         const tickerLink = `https://finance.yahoo.com/quote/${rec.ticker}`;
-        const price = rec.current_price !== undefined ? parseFloat(rec.current_price).toFixed(2) : '';
-        const pct = rec.percent_change !== undefined && rec.percent_change !== null ? (rec.percent_change * 100).toFixed(2) + '%' : '';
-        const reportTime = rec.report_time ? new Date(rec.report_time).toLocaleString() : '';
+        const priceVal = rec.current_price !== undefined ? parseFloat(rec.current_price) : null;
+        const price = priceVal !== null ? priceVal.toFixed(2) : "";
+        const pct = rec.percent_change !== undefined && rec.percent_change !== null ? (rec.percent_change * 100).toFixed(2) + "%" : "";
+        const reportTime = rec.report_time ? new Date(rec.report_time).toLocaleString() : "";
         tr.innerHTML = `
-          <td class="px-2 py-1 border-b"><a href="${rec.ticker ? `https://finance.yahoo.com/quote/${rec.ticker}` : ''}" target="_blank" class="text-blue-400 underline">${rec.ticker}</a></td>
+          <td class="px-2 py-1 border-b"><a href="${tickerLink}" target="_blank" class="text-blue-400 underline">${rec.ticker}</a></td>
           <td class="px-2 py-1 border-b">${rec.rating}</td>
           <td class="px-2 py-1 border-b">${price}</td>
           <td class="px-2 py-1 border-b">${pct}</td>
           <td class="px-2 py-1 border-b">${reportTime}</td>
-          <td class="px-2 py-1 border-b">${rec.reason || ''}</td>
-        `;
-        const actionTd = document.createElement('td');
-        const btn = document.createElement('button');
-        btn.textContent = (rec.rating || '').toLowerCase() === 'sell' ? 'Sell' : 'Trade';
-        btn.className = 'bg-purple-600 hover:bg-purple-700 text-white px-2 py-1 rounded';
-        btn.addEventListener('click', (ev) => {
-          ev.stopPropagation();
+          <td class="px-2 py-1 border-b">${rec.reason || ""}</td>
+          <td class="px-2 py-1 border-b"><button class="trade-btn bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded">Trade</button></td>`;
+        // attach event to trade button
+        tr.querySelector(".trade-btn").addEventListener("click", (e) => {
+          e.stopPropagation();
           openTradeModal(rec);
         });
-        actionTd.appendChild(btn);
-        tr.appendChild(actionTd);
         tbody.appendChild(tr);
       });
       table.appendChild(tbody);
@@ -379,6 +293,85 @@ document.getElementById("monitor-btn").addEventListener("click", startMonitoring
 refresh();
 // Poll for updates every 30 seconds
 setInterval(refresh, 30000);
+
+// Portfolio initialisation
+let portfolioState = loadPortfolio();
+updatePortfolioUI(portfolioState);
+
+// Save portfolio button handler
+document.getElementById("save-portfolio").addEventListener("click", () => {
+  const availInput = document.getElementById("available-balance");
+  const investedInput = document.getElementById("invested-amount");
+  const available = parseFloat(availInput.value);
+  const invested = parseFloat(investedInput.value);
+  if (!isNaN(available) && !isNaN(invested)) {
+    portfolioState = { available, invested };
+    savePortfolio(portfolioState);
+    updatePortfolioUI(portfolioState);
+    alert("Portfolio saved.");
+  }
+});
+
+// Modal management
+const tradeModal = document.getElementById("trade-modal");
+const tradeTitle = document.getElementById("trade-title");
+const tradeBody = document.getElementById("trade-body");
+const tradeConfirm = document.getElementById("trade-confirm");
+const tradeCancel = document.getElementById("trade-cancel");
+let currentTrade = null;
+
+function openTradeModal(rec) {
+  // Compute recommended shares (e.g. allocate 5% of available balance)
+  const allocPct = 0.05;
+  const maxSpend = portfolioState.available * allocPct;
+  const price = rec.current_price;
+  let shares = 0;
+  if (price && price > 0) {
+    shares = Math.floor(maxSpend / price);
+  }
+  // Stop loss at 10% below current price
+  const stopPrice = price ? (price * 0.9).toFixed(2) : "";
+  // Target price at 20% above current price
+  const targetPrice = price ? (price * 1.2).toFixed(2) : "";
+  // Projected gain (target - current) * shares
+  const projectedGain = price && shares ? ((targetPrice - price) * shares).toFixed(2) : "0";
+  const spend = shares * price;
+  tradeTitle.textContent = `Trade ${rec.rating.toUpperCase()} - ${rec.ticker}`;
+  tradeBody.innerHTML = `
+    <p><strong>Ticker:</strong> ${rec.ticker}</p>
+    <p><strong>Current Price:</strong> $${price ? price.toFixed(2) : ""}</p>
+    <p><strong>Recommended Shares:</strong> ${shares}</p>
+    <p><strong>Estimated Cost:</strong> $${spend.toFixed(2)}</p>
+    <p><strong>Stop Loss:</strong> $${stopPrice}</p>
+    <p><strong>Target Price:</strong> $${targetPrice}</p>
+    <p><strong>Projected Gain:</strong> $${projectedGain}</p>
+    <p><strong>Reason:</strong> ${rec.reason || "No specific reason provided"}</p>
+  `;
+  // Store trade details for confirm
+  currentTrade = { ticker: rec.ticker, shares, cost: spend };
+  tradeModal.classList.remove("hidden");
+}
+
+tradeCancel.addEventListener("click", () => {
+  tradeModal.classList.add("hidden");
+  currentTrade = null;
+});
+
+tradeConfirm.addEventListener("click", () => {
+  if (currentTrade && currentTrade.shares > 0) {
+    // Update portfolio: reduce available, increase invested
+    portfolioState.available -= currentTrade.cost;
+    portfolioState.invested += currentTrade.cost;
+    if (portfolioState.available < 0) portfolioState.available = 0;
+    savePortfolio(portfolioState);
+    updatePortfolioUI(portfolioState);
+    alert(`${currentTrade.shares} shares of ${currentTrade.ticker} simulated for purchase. Portfolio updated.`);
+  } else {
+    alert("No shares to purchase.");
+  }
+  tradeModal.classList.add("hidden");
+  currentTrade = null;
+});
 
 // Delete an analysis by ID
 async function deleteAnalysis(id) {

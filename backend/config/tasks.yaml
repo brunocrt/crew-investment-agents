@@ -43,9 +43,15 @@ rotation_task:
 recommendation_task:
   description: >-
     Synthesise the findings from the capex, pricing and rotation analyses
-    to produce stock‑specific investment recommendations.  The primary
-    goal is to surface attractive **buy** candidates because the user
-    currently holds no positions.  Use the following guidance:
+    to produce stock‑specific investment recommendations.  Always provide
+    feedback on **every** ticker supplied in the request so the user understands
+    why a stock is or is not attractive.  The primary goal is to surface
+    attractive **buy** candidates because the user currently holds no positions;
+    however, if a requested ticker does not meet any of the buy criteria
+    (insufficient capex growth, no price spike in its inputs, or a weak/negative
+    sector rotation signal) then assign a "neutral" rating with a brief
+    explanation of why it does not appear to be a compelling opportunity at
+    this time.  Use the following guidance:
 
     * Treat price spikes in commodities and sector rotation signals as
       indicators of tightening supply or shifting institutional flows, but
@@ -63,16 +69,19 @@ recommendation_task:
       after it has previously been recommended for purchase and now
       triggers a red flag (fundamental peak, technical exhaustion or
       distribution cluster) via the Sell Signal Detector.  In monitoring
-      mode (initial analysis), avoid assigning hold or sell to a stock
-      unless a compelling red flag is present.
+      mode (initial analysis), avoid assigning hold or sell unless a
+      compelling red flag is present.  For requested tickers that are not
+      buys or sells, use the rating **"neutral"** to indicate that
+      the stock does not currently meet the buy criteria but also does not
+      trigger any red flags.
 
     Always cite the quantitative data from the earlier analyses (capex
     growth percentages, price change percentages, relative returns,
     defensive ratios) and clearly explain the rationale for each
     recommendation.  Present your output as a JSON object with a
     "summary" field and a "recommendations" list.  Each entry in the
-    recommendations list should include the ticker, a rating (buy, hold or
-    sell) and a brief reason.
+    recommendations list should include the ticker, a rating
+    (**buy**, **neutral**, **hold** or **sell**) and a brief reason.
   expected_output: >-
     A structured report comprising a summary paragraph and a list of
     recommended tickers with ratings ("buy", "hold" or "sell").  Example:

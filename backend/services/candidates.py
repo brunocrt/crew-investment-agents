@@ -63,4 +63,11 @@ def get_default_candidate_tickers() -> List[str]:
         'XLU',   # Utilities Select Sector SPDR
         'XLE',   # Energy Select Sector SPDR
         'XLB',   # Materials Select Sector SPDR
+        # Technology heavyweights and AI leaders
+        'NVDA',  # Nvidia – AI/semiconductor leader
+        'MSFT',  # Microsoft – software & cloud
+        'AAPL',  # Apple Inc.
+        'GOOGL', # Alphabet Inc. (Class A)
+        'AMZN',  # Amazon.com
+        'AVGO',  # Broadcom – semiconductor and networking
     ]

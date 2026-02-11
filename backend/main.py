@@ -224,15 +224,41 @@ async def run_analysis(analysis_id: str, tickers_str: str) -> None:
                     from .services.price_info import get_stock_price_info
                     from datetime import datetime
                     recs = parsed.get('recommendations', [])
+                    # Build a set of tickers we've already got recommendations for
+                    existing_rec_tickers = set()
                     for rec in recs:
                         ticker = rec.get('ticker')
                         if ticker:
+                            existing_rec_tickers.add(ticker.upper())
                             info = get_stock_price_info(ticker)
                             if info:
                                 rec['current_price'] = info.get('current_price')
                                 rec['percent_change'] = info.get('percent_change')
                             # attach a report timestamp in ISO format
                             rec['report_time'] = datetime.utcnow().isoformat()
+                    # Ensure every requested ticker is represented.  Split the
+                    # tickers_str by commas, normalise to uppercase and add
+                    # neutral entries for any ticker that was not mentioned in
+                    # the LLM's recommendations list.  This guarantees the
+                    # frontend and users see explicit feedback even when no
+                    # strong signals are present.
+                    requested_tickers = [t.strip().upper() for t in tickers_str.split(',') if t.strip()]
+                    for req in requested_tickers:
+                        if req and req not in existing_rec_tickers:
+                            # Look up price info
+                            info = get_stock_price_info(req)
+                            neutral_entry = {
+                                'ticker': req,
+                                'rating': 'neutral',
+                                'reason': 'No strong capex growth, price spike or sector rotation signals were observed for this stock.',
+                            }
+                            if info:
+                                neutral_entry['current_price'] = info.get('current_price')
+                                neutral_entry['percent_change'] = info.get('percent_change')
+                            # attach a report timestamp
+                            from datetime import datetime as _datetime
+                            neutral_entry['report_time'] = _datetime.utcnow().isoformat()
+                            recs.append(neutral_entry)
                     # Persist the updated JSON object as a string so the
                     # frontend can access summary, reasons and price info.
                     updated_result_str = json.dumps(parsed)
