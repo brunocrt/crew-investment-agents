@@ -13,6 +13,7 @@ const els = {
   analysesList: document.getElementById("analyses-list"),
   apiStatus: document.getElementById("api-status"),
   availableBalance: document.getElementById("available-balance"),
+  candidateList: document.getElementById("candidate-list"),
   clearLogs: document.getElementById("clear-logs-btn"),
   historyBody: document.getElementById("history-body"),
   historyClose: document.getElementById("history-close"),
@@ -199,13 +200,20 @@ async function fetchAnalyses() {
   return res.json();
 }
 
+async function fetchCandidates() {
+  const res = await fetch(`${API_BASE}/candidates`);
+  if (!res.ok) throw new Error("Unable to fetch candidates");
+  return res.json();
+}
+
 async function refresh(options = {}) {
   try {
     if (options.spinRefresh) setButtonLoading(els.refreshBtn, true);
-    const analyses = await fetchAnalyses();
+    const [analyses, candidates] = await Promise.all([fetchAnalyses(), fetchCandidates()]);
     analysesCache = analyses;
     renderStats(analyses);
     renderAnalyses(analyses);
+    renderCandidateUniverse(candidates);
     els.lastRefresh.textContent = `Updated ${formatDateTime(new Date().toISOString())}`;
     setApiStatus("online", "Online");
 
@@ -219,6 +227,58 @@ async function refresh(options = {}) {
   } finally {
     if (options.spinRefresh) setButtonLoading(els.refreshBtn, false);
   }
+}
+
+function renderCandidateUniverse(candidates) {
+  if (!els.candidateList) return;
+  if (!candidates.length) {
+    els.candidateList.innerHTML = `<p class="text-sm text-slate-500">No candidates loaded yet.</p>`;
+    return;
+  }
+
+  const groups = [
+    { key: "core", title: "Core", rows: [] },
+    { key: "discovered", title: "Discovered", rows: [] },
+    { key: "promoted", title: "Promoted", rows: [] },
+  ];
+  const byKey = Object.fromEntries(groups.map((group) => [group.key, group]));
+  candidates.forEach((candidate) => {
+    const status = String(candidate.status || candidate.source || "discovered").toLowerCase();
+    const target = byKey[status] || byKey.discovered;
+    if (candidate.liquidity_ok !== false && status !== "archived" && status !== "rejected") {
+      target.rows.push(candidate);
+    }
+  });
+
+  els.candidateList.innerHTML = groups
+    .filter((group) => group.rows.length)
+    .map((group) => `
+      <div>
+        <div class="mb-2 flex items-center justify-between text-xs">
+          <span class="font-semibold text-slate-300">${escapeHtml(group.title)}</span>
+          <span class="text-slate-500">${group.rows.length}</span>
+        </div>
+        <div class="space-y-1">
+          ${group.rows.slice(0, 8).map(renderCandidateRow).join("")}
+        </div>
+      </div>
+    `)
+    .join("");
+  refreshIcons();
+}
+
+function renderCandidateRow(candidate) {
+  const score = Number.isFinite(Number(candidate.discovery_score)) ? Number(candidate.discovery_score).toFixed(0) : "N/A";
+  const theme = candidate.theme || candidate.sector || "Unclassified";
+  return `
+    <div class="soft-panel rounded-md px-3 py-2">
+      <div class="flex items-center justify-between gap-2">
+        <span class="text-sm font-semibold text-white">${escapeHtml(candidate.ticker)}</span>
+        <span class="text-xs text-cyan-200">${escapeHtml(score)}</span>
+      </div>
+      <p class="mt-1 truncate text-xs text-slate-500" title="${escapeHtml(candidate.reason || theme)}">${escapeHtml(theme)}</p>
+    </div>
+  `;
 }
 
 function renderStats(analyses) {
@@ -450,20 +510,21 @@ function renderRecommendations(recs) {
   if (!recs.length) {
     els.recommendations.innerHTML = `
       <div class="soft-panel rounded-lg p-5 text-sm text-slate-500">
-        Recommendations will appear here when the agents finish.
+        Candidate evaluations will appear here when the agents finish.
       </div>
     `;
     return;
   }
 
   const sortedRecs = [...recs].sort(compareRecommendations);
+  const groupedRecs = groupRecommendationRows(sortedRecs);
   els.recommendations.innerHTML = `
     <div class="mb-3 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
-      <span>Sorted by strongest opportunity first.</span>
-      <span>${sortedRecs.length} recommendation${sortedRecs.length === 1 ? "" : "s"}</span>
+      <span>Grouped by actionability, ordered by strongest opportunity first.</span>
+      <span>${sortedRecs.length} candidate${sortedRecs.length === 1 ? "" : "s"} evaluated</span>
     </div>
-    <div class="space-y-2">
-      ${sortedRecs.map(renderRecommendationCard).join("")}
+    <div class="space-y-4">
+      ${groupedRecs.map(renderRecommendationGroup).join("")}
     </div>
   `;
 
@@ -477,6 +538,49 @@ function renderRecommendations(recs) {
     button.addEventListener("click", () => openHistoryModal(button.dataset.ticker));
   });
   refreshIcons();
+}
+
+function groupRecommendationRows(sortedRecs) {
+  const groups = [
+    { key: "buy", title: "Buy Candidates", description: "Actionable opportunities that meet the buy threshold.", rows: [] },
+    { key: "exit", title: "Exit Risk", description: "Active hold/sell signals for positions with prior buy history.", rows: [] },
+    { key: "caution", title: "Caution", description: "Warning flags on monitored candidates that are not current exit actions.", rows: [] },
+    { key: "watchlist", title: "Watchlist / Neutral", description: "Evaluated candidates that do not currently meet buy criteria.", rows: [] },
+  ];
+  const byKey = Object.fromEntries(groups.map((group) => [group.key, group]));
+
+  sortedRecs.forEach((rec, index) => {
+    const rating = String(rec.rating || "neutral").toLowerCase();
+    const hasRisk = rec.risk_rating || (Array.isArray(rec.risks) && rec.risks.length);
+    if (rating === "buy") {
+      byKey.buy.rows.push({ rec, index });
+    } else if (rating === "sell" || rating === "hold") {
+      byKey.exit.rows.push({ rec, index });
+    } else if (hasRisk) {
+      byKey.caution.rows.push({ rec, index });
+    } else {
+      byKey.watchlist.rows.push({ rec, index });
+    }
+  });
+
+  return groups.filter((group) => group.rows.length);
+}
+
+function renderRecommendationGroup(group) {
+  return `
+    <section>
+      <div class="mb-2 flex flex-wrap items-end justify-between gap-2">
+        <div>
+          <h4 class="text-sm font-semibold text-white">${escapeHtml(group.title)}</h4>
+          <p class="text-xs text-slate-500">${escapeHtml(group.description)}</p>
+        </div>
+        <span class="text-xs text-slate-500">${group.rows.length}</span>
+      </div>
+      <div class="space-y-2">
+        ${group.rows.map(({ rec, index }) => renderRecommendationCard(rec, index)).join("")}
+      </div>
+    </section>
+  `;
 }
 
 function compareRecommendations(a, b) {
@@ -502,6 +606,7 @@ function renderRecommendationCard(rec, index) {
   const reportTime = formatDateTime(rec.report_time) || "N/A";
   const evidence = Array.isArray(rec.evidence) ? rec.evidence : [];
   const risks = Array.isArray(rec.risks) ? rec.risks : [];
+  const isBuy = String(rec.rating || "").toLowerCase() === "buy";
 
   return `
     <article class="soft-panel rounded-lg">
@@ -519,7 +624,7 @@ function renderRecommendationCard(rec, index) {
           </div>
           <div class="grid grid-cols-3 gap-2 text-right text-xs sm:min-w-72">
             <div>
-              <span class="block text-slate-500">Score</span>
+              <span class="block text-slate-500">Opportunity</span>
               <span class="font-semibold text-white">${escapeHtml(score)}</span>
             </div>
             <div>
@@ -551,9 +656,9 @@ function renderRecommendationCard(rec, index) {
             </div>
           </div>
           <div class="mt-4 flex flex-wrap gap-2">
-            <button data-index="${index}" class="trade-btn inline-flex items-center gap-2 rounded-md bg-cyan-500 px-3 py-2 text-xs font-semibold text-slate-950 hover:bg-cyan-400">
+            <button data-index="${index}" ${isBuy ? "" : "disabled"} class="trade-btn inline-flex items-center gap-2 rounded-md px-3 py-2 text-xs font-semibold ${isBuy ? "bg-cyan-500 text-slate-950 hover:bg-cyan-400" : "cursor-not-allowed bg-slate-800 text-slate-500"}">
               ${icon("briefcase-business", "h-4 w-4")}
-              Trade
+              ${isBuy ? "Plan Trade" : "No Trade"}
             </button>
             <button data-ticker="${escapeHtml(rec.ticker || "")}" class="history-btn inline-flex items-center gap-2 rounded-md bg-slate-700 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-600">
               ${icon("history", "h-4 w-4")}

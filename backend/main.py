@@ -27,6 +27,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from .models.analysis import Analysis, LogEntry, AnalysisStatus
+from .models.candidate import Candidate
 from .models.recommendation_history import RecommendationHistory
 from .models.base import Base, engine, get_session
 from .agents.crew import InvestmentRecommendationCrew
@@ -159,15 +160,17 @@ async def create_analysis(request: AnalysisCreateRequest, background_tasks: Back
     # Determine which tickers to use.  If the request body omits them or
     # provides an empty list, fall back to default candidates for
     # monitoring mode.
-    from .services.candidates import discover_candidate_tickers
+    from .services.candidates import select_monitor_tickers
 
     tickers_list: List[str]
     if not request.tickers:
-        tickers_list = discover_candidate_tickers()
+        with get_session() as db:
+            tickers_list = select_monitor_tickers(db)
     else:
         tickers_list = [ticker.strip().upper() for ticker in request.tickers if ticker.strip()]
         if not tickers_list:
-            tickers_list = discover_candidate_tickers()
+            with get_session() as db:
+                tickers_list = select_monitor_tickers(db)
     tickers_str = ",".join(tickers_list)
     # Create analysis record
     with get_session() as db:
@@ -194,6 +197,32 @@ async def list_analyses():
                 "recommendation": a.recommendation,
             }
             for a in analyses
+        ]
+
+
+@app.get("/candidates")
+async def get_candidates(discover: bool = False):
+    """Return the current candidate universe used by monitor mode."""
+    from .services.candidates import discover_dynamic_candidates, list_candidates
+
+    with get_session() as db:
+        if discover:
+            discover_dynamic_candidates(db)
+            db.flush()
+        candidates = list_candidates(db)
+        return [
+            {
+                "ticker": candidate.ticker,
+                "source": candidate.source,
+                "status": candidate.status,
+                "theme": candidate.theme,
+                "sector": candidate.sector,
+                "reason": candidate.reason,
+                "discovery_score": candidate.discovery_score,
+                "liquidity_ok": candidate.liquidity_ok,
+                "last_discovered_at": candidate.last_discovered_at.isoformat() if candidate.last_discovered_at else None,
+            }
+            for candidate in candidates
         ]
 
 

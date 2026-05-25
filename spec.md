@@ -4,7 +4,7 @@ Overview
 
 This project implements a multi-agent stock recommendation system for identifying investment opportunities and exit signals in public markets. It uses CrewAI to coordinate specialized agents that analyze capital expenditure trends, commodity prices, sector performance, technical signals and exit risks. The system exposes a FastAPI backend with REST and WebSocket endpoints, a frontend built with HTML/JavaScript, and runs locally or inside Docker/Podman containers.
 
-The goal of the platform is to surface buy, neutral, hold or sell recommendations for equities and ETFs. Buy recommendations are based on indicators such as surging capital expenditure, commodity price spikes and sector rotation. Neutral ratings explain why a stock does not meet the buy criteria. Hold or sell ratings are only active after a stock was previously recommended as a buy and subsequently triggers a red-flag exit signal. Otherwise, exit signals are preserved as risk evidence.
+The goal of the platform is to evaluate equities and ETFs as investment candidates and clearly separate actionable buy recommendations from neutral watchlist items and risk evidence. Buy recommendations are based on indicators such as surging capital expenditure, commodity price spikes and sector rotation. Neutral ratings explain why a stock does not meet the buy criteria. Hold or sell ratings are only active after a stock was previously recommended as a buy and subsequently triggers a red-flag exit signal. Otherwise, exit signals are preserved as risk evidence.
 
 Backend
 
@@ -18,6 +18,8 @@ LogEntry persists each line of agent output with timestamp and analysis_id. Logs
 
 RecommendationHistory records every ticker recommendation with current price, 30-day percent change, report time and rationale. This supports historical recommendation views.
 
+Candidate stores the monitor universe. Core candidates come from the curated thesis list; discovered candidates are added by the dynamic discovery service with source, status, theme, sector, liquidity flag, reason and discovery score.
+
 Services:
 
 capex.py uses yfinance to fetch capital expenditure from company financial statements and calculate growth between the latest two periods.
@@ -30,7 +32,7 @@ sell.py evaluates exit signals: fundamental peak, technical exhaustion and distr
 
 price_info.py fetches current stock price and 30-day percent change.
 
-candidates.py returns the default monitoring universe and can rank the curated universe by recent momentum for monitoring mode.
+candidates.py returns and persists the monitoring universe. It seeds core candidates, searches broader thesis-adjacent ticker pools, scores dynamic candidates by momentum, volatility, drawdown and liquidity, and selects active candidates for monitoring mode.
 
 scoring.py calculates deterministic recommendation scores for each ticker, including capex, pricing, rotation, risk components, final opportunity score, confidence, structured evidence and risk flags.
 
@@ -50,7 +52,7 @@ The recommendation task asks the LLM to produce a JSON object with a summary and
 
 API
 
-POST /analyses accepts an optional list of tickers and starts an asynchronous analysis. If no tickers are provided, the backend uses the monitored candidate list.
+POST /analyses accepts an optional list of tickers and starts an asynchronous analysis. If no tickers are provided, the backend seeds the core universe, discovers dynamic candidates and analyzes the active candidate list.
 
 GET /analyses lists all analyses with basic metadata.
 
@@ -62,11 +64,13 @@ DELETE /analyses/{id} deletes an analysis, its logs and related history rows.
 
 GET /history/{ticker} returns chronological recommendation history for a ticker.
 
+GET /candidates returns the current core, discovered and promoted candidate universe. Passing discover=true refreshes dynamic discovery before returning the list.
+
 WebSocket /ws/{id} streams live log lines for a running analysis.
 
 Analysis Flow
 
-The backend creates an Analysis row with running status, executes the CrewAI workflow asynchronously, streams stdout line by line into LogEntry records and WebSocket clients, parses the crew JSON output, enriches recommendations with price info, deterministic scoring, confidence, evidence and risks, adds missing neutral entries, applies the prior-buy guard for hold/sell ratings, stores the JSON summary, updates the aggregate recommendation string and writes RecommendationHistory rows.
+The backend creates an Analysis row with running status, executes the CrewAI workflow asynchronously, streams stdout line by line into LogEntry records and WebSocket clients, parses the crew JSON output, enriches recommendations with price info, deterministic scoring, confidence, evidence and risks, adds missing neutral entries, applies the prior-buy guard for hold/sell ratings, stores the JSON summary, updates the aggregate recommendation string and writes RecommendationHistory rows. In monitor mode, the backend first refreshes the candidate universe so the agents evaluate both core and discovered tickers.
 
 Frontend
 
@@ -76,13 +80,15 @@ Header and stats showing total runs, running runs and completed runs.
 
 Portfolio section with editable available cash and read-only invested amount, persisted to localStorage.
 
+Candidate Universe panel showing core, discovered and promoted candidates with discovery scores and themes.
+
 Action buttons for New Analysis and Monitor Reports with immediate loading states, status feedback and toast messages.
 
 Recent Analyses list with status badges, selected-state styling, local timestamps and delete action.
 
 Agent Logs panel that shows immediate local feedback and streams live WebSocket log output when an analysis is selected.
 
-Analysis Report panel with parsed summary and an opportunity-ranked collapsed recommendation list. Recommendations are sorted by deterministic score, rating priority, confidence and ticker. Collapsed rows show ticker, rating, brief rationale, score, current price and 30-day change. Expanding a row reveals full rationale, report time, model/risk rating, structured evidence, risk flags and action buttons.
+Analysis Report panel with parsed summary and grouped candidate evaluations. Rows are grouped into Buy Candidates, Exit Risk, Caution and Watchlist / Neutral, then ordered by deterministic opportunity score, rating priority, confidence and ticker. Exit Risk is reserved for active hold/sell signals with prior buy history; Caution is used for warning flags on monitored candidates that are not current exit actions. Collapsed rows show ticker, rating, brief rationale, opportunity score, current price and 30-day change. Expanding a row reveals full rationale, report time, model/risk rating, structured evidence, risk flags and action buttons. Trade planning is enabled only for buy candidates.
 
 Trade modal with editable share quantity, stop-loss, target price and dividend yield. It calculates estimated cost, projected gain and dividend estimate, then updates the simulated portfolio on confirmation. No real orders are executed.
 
@@ -107,4 +113,3 @@ docker-compose up
 open http://localhost:3000
 
 The project also runs locally for development by starting Uvicorn for the backend and serving the frontend statically.
-
