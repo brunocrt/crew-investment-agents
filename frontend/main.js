@@ -10,15 +10,28 @@ const API_BASE = (() => {
 
 const els = {
   actionStatus: document.getElementById("action-status"),
+  addHolding: document.getElementById("add-holding"),
+  agentConfigEditor: document.getElementById("agent-config-editor"),
+  agentConfigList: document.getElementById("agent-config-list"),
+  agentLlmModel: document.getElementById("agent-llm-model"),
+  agentLlmTemperature: document.getElementById("agent-llm-temperature"),
+  agentsNavBtn: document.getElementById("agents-nav-btn"),
+  agentsView: document.getElementById("agents-view"),
   analysesList: document.getElementById("analyses-list"),
+  analyzeHoldings: document.getElementById("analyze-holdings"),
   apiStatus: document.getElementById("api-status"),
   availableBalance: document.getElementById("available-balance"),
   candidateList: document.getElementById("candidate-list"),
+  candidateRefreshMeta: document.getElementById("candidate-refresh-meta"),
   clearLogs: document.getElementById("clear-logs-btn"),
   historyBody: document.getElementById("history-body"),
   historyClose: document.getElementById("history-close"),
   historyModal: document.getElementById("history-modal"),
   historyTitle: document.getElementById("history-title"),
+  holdingAverageCost: document.getElementById("holding-average-cost"),
+  holdingShares: document.getElementById("holding-shares"),
+  holdingsList: document.getElementById("holdings-list"),
+  holdingTicker: document.getElementById("holding-ticker"),
   investedAmount: document.getElementById("invested-amount"),
   lastRefresh: document.getElementById("last-refresh"),
   logsCollapseBtn: document.getElementById("logs-collapse-btn"),
@@ -30,17 +43,21 @@ const els = {
   portfolioSummary: document.getElementById("portfolio-summary"),
   recommendations: document.getElementById("recommendations"),
   refreshBtn: document.getElementById("refresh-btn"),
+  refreshCandidates: document.getElementById("refresh-candidates"),
+  reloadAgentConfig: document.getElementById("reload-agent-config"),
   reportCollapseBtn: document.getElementById("report-collapse-btn"),
   reportPanelBody: document.getElementById("report-panel-body"),
   reportSummary: document.getElementById("report-summary"),
   dashboardNavBtn: document.getElementById("dashboard-nav-btn"),
   dashboardView: document.getElementById("dashboard-view"),
   saveAnalysisSettings: document.getElementById("save-analysis-settings"),
+  saveAgentConfig: document.getElementById("save-agent-config"),
   savePortfolio: document.getElementById("save-portfolio"),
   selectedAnalysisLabel: document.getElementById("selected-analysis-label"),
   selectedStatus: document.getElementById("selected-status"),
   settingMinOpportunity: document.getElementById("setting-min-opportunity"),
   settingMinValuation: document.getElementById("setting-min-valuation"),
+  settingCandidateRefresh: document.getElementById("setting-candidate-refresh"),
   settingPositionSize: document.getElementById("setting-position-size"),
   settingRiskTolerance: document.getElementById("setting-risk-tolerance"),
   settingStopLoss: document.getElementById("setting-stop-loss"),
@@ -63,6 +80,8 @@ let currentTrade = null;
 let selectedAnalysisId = null;
 let analysesCache = [];
 let portfolioState = loadPortfolio();
+let agentConfigState = { agents: {}, tasks: {}, llm: { model: "gpt-4o", temperature: 0.3 } };
+let selectedAgentKey = null;
 let sidebarCollapsed = localStorage.getItem("sidebar-collapsed") === "true";
 let panelCollapseState = loadPanelCollapseState();
 let activeView = localStorage.getItem("active-view") || "dashboard";
@@ -106,11 +125,16 @@ function toggleSidebar() {
 }
 
 function setActiveView(view) {
-  activeView = view === "settings" ? "settings" : "dashboard";
+  activeView = ["settings", "agents"].includes(view) ? view : "dashboard";
   localStorage.setItem("active-view", activeView);
   const isSettings = activeView === "settings";
-  els.dashboardView?.classList.toggle("hidden", isSettings);
+  const isAgents = activeView === "agents";
+  els.dashboardView?.classList.toggle("hidden", activeView !== "dashboard");
   els.settingsView?.classList.toggle("hidden", !isSettings);
+  els.agentsView?.classList.toggle("hidden", !isAgents);
+  if (isAgents && !Object.keys(agentConfigState.agents || {}).length) {
+    loadAgentConfig();
+  }
   updateViewNav();
 }
 
@@ -118,6 +142,7 @@ function updateViewNav() {
   [
     { button: els.dashboardNavBtn, view: "dashboard" },
     { button: els.settingsNavBtn, view: "settings" },
+    { button: els.agentsNavBtn, view: "agents" },
   ].forEach(({ button, view }) => {
     if (!button) return;
     const active = activeView === view;
@@ -145,6 +170,7 @@ function loadAnalysisSettings() {
     minOpportunityScore: 70,
     minValuationScore: 35,
     riskTolerance: "balanced",
+    candidateRefreshCadence: "monitor",
   };
   try {
     return { ...defaults, ...JSON.parse(localStorage.getItem("analysis-settings") || "{}") };
@@ -161,6 +187,7 @@ function saveAnalysisSettings() {
     minOpportunityScore: clampNumber(els.settingMinOpportunity?.value, 0, 100, 70),
     minValuationScore: clampNumber(els.settingMinValuation?.value, 0, 100, 35),
     riskTolerance: els.settingRiskTolerance?.value || "balanced",
+    candidateRefreshCadence: els.settingCandidateRefresh?.value || "monitor",
   };
   localStorage.setItem("analysis-settings", JSON.stringify(analysisSettings));
   updateAnalysisSettingsUI();
@@ -174,12 +201,52 @@ function updateAnalysisSettingsUI() {
   if (els.settingMinOpportunity) els.settingMinOpportunity.value = Number(analysisSettings.minOpportunityScore).toFixed(0);
   if (els.settingMinValuation) els.settingMinValuation.value = Number(analysisSettings.minValuationScore).toFixed(0);
   if (els.settingRiskTolerance) els.settingRiskTolerance.value = analysisSettings.riskTolerance || "balanced";
+  if (els.settingCandidateRefresh) els.settingCandidateRefresh.value = analysisSettings.candidateRefreshCadence || "monitor";
+  updateCandidateRefreshMeta();
 }
 
 function clampNumber(value, min, max, fallback) {
   const number = Number(value);
   if (!Number.isFinite(number)) return fallback;
   return Math.max(min, Math.min(max, number));
+}
+
+function candidateRefreshIntervalMs() {
+  const cadence = analysisSettings.candidateRefreshCadence || "monitor";
+  if (cadence === "daily") return 24 * 60 * 60 * 1000;
+  if (cadence === "weekly") return 7 * 24 * 60 * 60 * 1000;
+  return null;
+}
+
+function candidateRefreshLabel() {
+  const cadence = analysisSettings.candidateRefreshCadence || "monitor";
+  const labels = {
+    monitor: "Refreshes when a monitor/default analysis runs.",
+    daily: "Auto-discovery runs at most once per day.",
+    weekly: "Auto-discovery runs at most once per week.",
+    manual: "Discovery runs only when you press Refresh Universe.",
+  };
+  return labels[cadence] || labels.monitor;
+}
+
+function shouldDiscoverCandidates(force = false) {
+  if (force) return true;
+  const interval = candidateRefreshIntervalMs();
+  if (!interval) return false;
+  const last = Number(localStorage.getItem("candidate-universe-last-discovery") || 0);
+  return !last || Date.now() - last >= interval;
+}
+
+function markCandidateDiscovery() {
+  localStorage.setItem("candidate-universe-last-discovery", String(Date.now()));
+  updateCandidateRefreshMeta();
+}
+
+function updateCandidateRefreshMeta() {
+  if (!els.candidateRefreshMeta) return;
+  const last = Number(localStorage.getItem("candidate-universe-last-discovery") || 0);
+  const lastText = last ? ` Last discovery: ${formatDateTime(new Date(last))}.` : " No discovery refresh recorded yet.";
+  els.candidateRefreshMeta.textContent = `${candidateRefreshLabel()}${lastText}`;
 }
 
 function savePanelCollapseState() {
@@ -288,25 +355,67 @@ function priceChangeClass(value) {
 }
 
 function loadPortfolio() {
+  const defaults = { available: 10000, invested: 0, positions: [] };
   const stored = localStorage.getItem("portfolio");
   if (stored) {
     try {
-      return JSON.parse(stored);
+      return normalizePortfolio(JSON.parse(stored));
     } catch (e) {
-      return { available: 10000, invested: 0 };
+      return defaults;
     }
   }
-  return { available: 10000, invested: 0 };
+  return defaults;
+}
+
+function normalizeTicker(value) {
+  return String(value || "").trim().toUpperCase();
+}
+
+function normalizePosition(position) {
+  const ticker = normalizeTicker(position?.ticker);
+  const shares = Number(position?.shares);
+  const averageCost = Number(position?.averageCost ?? position?.average_cost ?? position?.avgCost);
+  if (!ticker || !Number.isFinite(shares) || shares <= 0 || !Number.isFinite(averageCost) || averageCost < 0) {
+    return null;
+  }
+  return { ticker, shares, averageCost };
+}
+
+function portfolioPositions(portfolio = portfolioState) {
+  return Array.isArray(portfolio?.positions)
+    ? portfolio.positions.map(normalizePosition).filter(Boolean)
+    : [];
+}
+
+function calculateInvested(portfolio = portfolioState) {
+  const positions = portfolioPositions(portfolio);
+  if (Array.isArray(portfolio?.positions)) {
+    return positions.reduce((sum, position) => sum + position.shares * position.averageCost, 0);
+  }
+  return Number(portfolio?.invested || 0);
+}
+
+function normalizePortfolio(portfolio) {
+  const available = Number(portfolio?.available);
+  const positions = portfolioPositions(portfolio);
+  const normalized = {
+    available: Number.isFinite(available) ? available : 10000,
+    positions,
+  };
+  normalized.invested = calculateInvested({ ...portfolio, positions });
+  return normalized;
 }
 
 function savePortfolioState(portfolio) {
-  localStorage.setItem("portfolio", JSON.stringify(portfolio));
+  localStorage.setItem("portfolio", JSON.stringify(normalizePortfolio(portfolio)));
 }
 
 function updatePortfolioUI(portfolio) {
-  els.availableBalance.value = Number(portfolio.available || 0).toFixed(2);
-  els.investedAmount.value = Number(portfolio.invested || 0).toFixed(2);
-  renderPortfolioSummary(portfolio);
+  portfolioState = normalizePortfolio(portfolio);
+  els.availableBalance.value = Number(portfolioState.available || 0).toFixed(2);
+  els.investedAmount.value = Number(calculateInvested(portfolioState)).toFixed(2);
+  renderPortfolioSummary(portfolioState);
+  renderHoldings(portfolioState);
 }
 
 function renderPortfolioSummary(portfolio) {
@@ -335,6 +444,90 @@ function renderPortfolioSummary(portfolio) {
       </article>
     `)
     .join("");
+  refreshIcons();
+}
+
+function findPortfolioPosition(ticker) {
+  const normalizedTicker = normalizeTicker(ticker);
+  return portfolioPositions().find((position) => position.ticker === normalizedTicker) || null;
+}
+
+function upsertPortfolioPosition(position) {
+  const normalized = normalizePosition(position);
+  if (!normalized) return false;
+  const positions = portfolioPositions().filter((item) => item.ticker !== normalized.ticker);
+  positions.push(normalized);
+  positions.sort((a, b) => a.ticker.localeCompare(b.ticker));
+  portfolioState = normalizePortfolio({ ...portfolioState, positions });
+  savePortfolioState(portfolioState);
+  updatePortfolioUI(portfolioState);
+  return true;
+}
+
+function removePortfolioPosition(ticker) {
+  const normalizedTicker = normalizeTicker(ticker);
+  portfolioState = normalizePortfolio({
+    ...portfolioState,
+    positions: portfolioPositions().filter((position) => position.ticker !== normalizedTicker),
+  });
+  savePortfolioState(portfolioState);
+  updatePortfolioUI(portfolioState);
+}
+
+function addPositionFromTrade(trade) {
+  const ticker = normalizeTicker(trade?.ticker);
+  const shares = Number(trade?.shares || 0);
+  const price = Number(trade?.price || 0);
+  if (!ticker || shares <= 0 || price < 0) return;
+  const existing = findPortfolioPosition(ticker);
+  const existingShares = Number(existing?.shares || 0);
+  const totalShares = existingShares + shares;
+  const existingCost = existingShares * Number(existing?.averageCost || 0);
+  const newCost = shares * price;
+  const averageCost = totalShares > 0 ? (existingCost + newCost) / totalShares : price;
+  upsertPortfolioPosition({ ticker, shares: totalShares, averageCost });
+}
+
+function renderHoldings(portfolio) {
+  if (!els.holdingsList) return;
+  const positions = portfolioPositions(portfolio);
+  if (!positions.length) {
+    els.holdingsList.innerHTML = `
+      <div class="rounded-md border border-slate-800 bg-slate-950/50 p-3 text-sm text-slate-500">
+        No existing holdings tracked yet.
+      </div>
+    `;
+    return;
+  }
+
+  els.holdingsList.innerHTML = positions
+    .map((position) => {
+      const costBasis = position.shares * position.averageCost;
+      return `
+        <article class="min-w-0 rounded-md border border-slate-800 bg-slate-950/50 p-3">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div class="min-w-0">
+              <div class="font-semibold text-white">${escapeHtml(position.ticker)}</div>
+              <div class="mt-1 text-xs text-slate-500">${position.shares.toLocaleString(undefined, { maximumFractionDigits: 4 })} shares at ${escapeHtml(money(position.averageCost))}</div>
+            </div>
+            <div class="flex items-center gap-3">
+              <div class="text-right text-xs">
+                <span class="block text-slate-500">Cost Basis</span>
+                <span class="font-semibold text-slate-200">${escapeHtml(money(costBasis))}</span>
+              </div>
+              <button data-ticker="${escapeHtml(position.ticker)}" class="remove-holding inline-flex h-8 w-8 items-center justify-center rounded-md text-slate-400 hover:bg-red-950/40 hover:text-red-200" title="Remove holding">
+                ${icon("trash-2", "h-4 w-4")}
+              </button>
+            </div>
+          </div>
+        </article>
+      `;
+    })
+    .join("");
+
+  els.holdingsList.querySelectorAll(".remove-holding").forEach((button) => {
+    button.addEventListener("click", () => removePortfolioPosition(button.dataset.ticker));
+  });
   refreshIcons();
 }
 
@@ -401,16 +594,201 @@ async function fetchAnalyses() {
   return res.json();
 }
 
-async function fetchCandidates() {
-  const res = await fetch(`${API_BASE}/candidates`);
+async function fetchCandidates(options = {}) {
+  const discover = Boolean(options.discover);
+  const res = await fetch(`${API_BASE}/candidates${discover ? "?discover=true" : ""}`);
   if (!res.ok) throw new Error("Unable to fetch candidates");
+  const candidates = await res.json();
+  if (discover) markCandidateDiscovery();
+  return candidates;
+}
+
+async function fetchAgentConfig() {
+  const res = await fetch(`${API_BASE}/agent-config`);
+  if (!res.ok) throw new Error("Unable to fetch agent config");
   return res.json();
+}
+
+function agentTaskKey(agentKey) {
+  const explicit = {
+    capex_researcher: "capex_task",
+    pricing_analyst: "pricing_task",
+    rotation_analyst: "rotation_task",
+    recommendation_strategist: "recommendation_task",
+  };
+  return explicit[agentKey] || agentKey.replace(/_(researcher|analyst|strategist|agent)$/, "_task");
+}
+
+function agentDisplayName(key) {
+  return String(key || "")
+    .split("_")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+async function loadAgentConfig() {
+  if (!els.agentConfigEditor) return;
+  els.agentConfigEditor.innerHTML = `
+    <div class="panel rounded-lg p-5 text-sm text-slate-500">
+      Loading agent configuration...
+    </div>
+  `;
+  try {
+    agentConfigState = await fetchAgentConfig();
+    selectedAgentKey = selectedAgentKey || Object.keys(agentConfigState.agents || {})[0] || null;
+    renderAgentConfigUI();
+  } catch (e) {
+    els.agentConfigEditor.innerHTML = `
+      <div class="panel rounded-lg p-5 text-sm text-red-300">
+        Unable to load agent configuration.
+      </div>
+    `;
+    showToast("Could not load agent settings.", "error");
+  }
+}
+
+function renderAgentConfigUI() {
+  renderAgentConfigList();
+  renderSelectedAgentEditor();
+  if (els.agentLlmModel) els.agentLlmModel.value = agentConfigState.llm?.model || "gpt-4o";
+  if (els.agentLlmTemperature) els.agentLlmTemperature.value = Number(agentConfigState.llm?.temperature ?? 0.3).toFixed(1);
+  refreshIcons();
+}
+
+function renderAgentConfigList() {
+  if (!els.agentConfigList) return;
+  const agentKeys = Object.keys(agentConfigState.agents || {});
+  if (!agentKeys.length) {
+    els.agentConfigList.innerHTML = `<p class="text-sm text-slate-500">No agents configured.</p>`;
+    return;
+  }
+  els.agentConfigList.innerHTML = agentKeys
+    .map((key) => {
+      const agent = agentConfigState.agents[key] || {};
+      const active = key === selectedAgentKey;
+      return `
+        <button data-agent-key="${escapeHtml(key)}" class="agent-config-tab w-full rounded-md border px-3 py-2 text-left text-sm ${active ? "border-cyan-400/30 bg-cyan-400/10 text-cyan-100" : "border-slate-800 bg-slate-950/50 text-slate-300 hover:bg-slate-900"}">
+          <span class="block font-semibold">${escapeHtml(agent.role || agentDisplayName(key))}</span>
+          <span class="mt-1 block truncate text-xs text-slate-500">${escapeHtml(key)}</span>
+        </button>
+      `;
+    })
+    .join("");
+  els.agentConfigList.querySelectorAll(".agent-config-tab").forEach((button) => {
+    button.addEventListener("click", () => {
+      persistSelectedAgentEditor();
+      selectedAgentKey = button.dataset.agentKey;
+      renderAgentConfigUI();
+    });
+  });
+}
+
+function renderSelectedAgentEditor() {
+  if (!els.agentConfigEditor) return;
+  if (!selectedAgentKey) {
+    els.agentConfigEditor.innerHTML = `
+      <div class="panel rounded-lg p-5 text-sm text-slate-500">
+        Select an agent to edit.
+      </div>
+    `;
+    return;
+  }
+  const agent = agentConfigState.agents[selectedAgentKey] || {};
+  const taskKey = agentTaskKey(selectedAgentKey);
+  const task = agentConfigState.tasks?.[taskKey] || {};
+  els.agentConfigEditor.innerHTML = `
+    <section class="panel rounded-lg p-4">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h3 class="text-base font-semibold text-white">${escapeHtml(agent.role || agentDisplayName(selectedAgentKey))}</h3>
+          <p class="mt-1 text-xs text-slate-500">${escapeHtml(selectedAgentKey)} / ${escapeHtml(taskKey)}</p>
+        </div>
+        <label class="flex items-center gap-2 rounded-md border border-slate-800 bg-slate-950/50 px-3 py-2 text-xs text-slate-300">
+          <input id="agent-verbose" type="checkbox" class="h-4 w-4 accent-cyan-400" ${agent.verbose ? "checked" : ""} />
+          Verbose
+        </label>
+      </div>
+      <div class="mt-4 grid grid-cols-1 gap-3">
+        <label class="block">
+          <span class="text-xs text-slate-400">Role</span>
+          <input id="agent-role" type="text" value="${escapeHtml(agent.role || "")}" class="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-white outline-none focus:border-cyan-400" />
+        </label>
+        <label class="block">
+          <span class="text-xs text-slate-400">Goal Prompt</span>
+          <textarea id="agent-goal" rows="5" class="mt-1 w-full resize-y rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm leading-6 text-white outline-none focus:border-cyan-400">${escapeHtml(agent.goal || "")}</textarea>
+        </label>
+        <label class="block">
+          <span class="text-xs text-slate-400">Backstory / Behavior</span>
+          <textarea id="agent-backstory" rows="4" class="mt-1 w-full resize-y rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm leading-6 text-white outline-none focus:border-cyan-400">${escapeHtml(agent.backstory || "")}</textarea>
+        </label>
+      </div>
+    </section>
+    <section class="panel rounded-lg p-4">
+      <h3 class="text-base font-semibold text-white">Task Prompt</h3>
+      <div class="mt-4 grid grid-cols-1 gap-3">
+        <label class="block">
+          <span class="text-xs text-slate-400">Description</span>
+          <textarea id="task-description" rows="10" class="mt-1 w-full resize-y rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm leading-6 text-white outline-none focus:border-cyan-400">${escapeHtml(task.description || "")}</textarea>
+        </label>
+        <label class="block">
+          <span class="text-xs text-slate-400">Expected Output</span>
+          <textarea id="task-expected-output" rows="5" class="mt-1 w-full resize-y rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm leading-6 text-white outline-none focus:border-cyan-400">${escapeHtml(task.expected_output || "")}</textarea>
+        </label>
+      </div>
+    </section>
+  `;
+}
+
+function persistSelectedAgentEditor() {
+  if (!selectedAgentKey || !els.agentConfigEditor || !document.getElementById("agent-role")) return;
+  const taskKey = agentTaskKey(selectedAgentKey);
+  agentConfigState.agents[selectedAgentKey] = {
+    ...(agentConfigState.agents[selectedAgentKey] || {}),
+    role: document.getElementById("agent-role").value,
+    goal: document.getElementById("agent-goal").value,
+    backstory: document.getElementById("agent-backstory").value,
+    allow_delegation: Boolean(agentConfigState.agents[selectedAgentKey]?.allow_delegation),
+    verbose: document.getElementById("agent-verbose").checked,
+  };
+  agentConfigState.tasks[taskKey] = {
+    ...(agentConfigState.tasks[taskKey] || {}),
+    description: document.getElementById("task-description").value,
+    expected_output: document.getElementById("task-expected-output").value,
+  };
+}
+
+async function saveAgentConfig() {
+  persistSelectedAgentEditor();
+  agentConfigState.llm = {
+    model: els.agentLlmModel?.value || "gpt-4o",
+    temperature: clampNumber(els.agentLlmTemperature?.value, 0, 2, 0.3),
+  };
+  setButtonLoading(els.saveAgentConfig, true, "Saving");
+  try {
+    const res = await fetch(`${API_BASE}/agent-config`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(agentConfigState),
+    });
+    if (!res.ok) throw new Error("Save failed");
+    const saved = await res.json();
+    agentConfigState.llm = saved.llm || agentConfigState.llm;
+    renderAgentConfigUI();
+    showToast("Agent settings saved. New analysis runs will use them.", "success");
+  } catch (e) {
+    showToast("Could not save agent settings.", "error");
+  } finally {
+    setButtonLoading(els.saveAgentConfig, false);
+  }
 }
 
 async function refresh(options = {}) {
   try {
     if (options.spinRefresh) setButtonLoading(els.refreshBtn, true);
-    const [analyses, candidates] = await Promise.all([fetchAnalyses(), fetchCandidates()]);
+    if (options.spinCandidates) setButtonLoading(els.refreshCandidates, true, "Refreshing");
+    const discoverCandidates = shouldDiscoverCandidates(Boolean(options.discoverCandidates));
+    const [analyses, candidates] = await Promise.all([fetchAnalyses(), fetchCandidates({ discover: discoverCandidates })]);
     analysesCache = analyses;
     renderStats(analyses);
     renderAnalyses(analyses);
@@ -427,6 +805,7 @@ async function refresh(options = {}) {
     throw e;
   } finally {
     if (options.spinRefresh) setButtonLoading(els.refreshBtn, false);
+    if (options.spinCandidates) setButtonLoading(els.refreshCandidates, false);
   }
 }
 
@@ -744,7 +1123,7 @@ function renderRecommendations(recs) {
 function groupRecommendationRows(sortedRecs) {
   const groups = [
     { key: "buy", title: "Buy Candidates", description: "Actionable opportunities that meet the buy threshold.", rows: [] },
-    { key: "exit", title: "Exit Risk", description: "Active hold/sell signals for positions with prior buy history.", rows: [] },
+    { key: "exit", title: "Exit Risk", description: "Hold/sell signals for stocks you own or positions with prior buy history.", rows: [] },
     { key: "caution", title: "Caution", description: "Warning flags on monitored candidates that are not current exit actions.", rows: [] },
     { key: "watchlist", title: "Watchlist / Neutral", description: "Evaluated candidates that do not currently meet buy criteria.", rows: [] },
   ];
@@ -753,9 +1132,10 @@ function groupRecommendationRows(sortedRecs) {
   sortedRecs.forEach((rec, index) => {
     const rating = String(rec.rating || "neutral").toLowerCase();
     const hasRisk = rec.risk_rating || (Array.isArray(rec.risks) && rec.risks.length);
+    const isOwned = Boolean(findPortfolioPosition(rec.ticker));
     if (rating === "buy") {
       byKey.buy.rows.push({ rec, index });
-    } else if (rating === "sell" || rating === "hold") {
+    } else if (rating === "sell" || rating === "hold" || (isOwned && hasRisk)) {
       byKey.exit.rows.push({ rec, index });
     } else if (hasRisk) {
       byKey.caution.rows.push({ rec, index });
@@ -815,6 +1195,7 @@ function renderRecommendationCard(rec, index) {
   const confidenceStyles = signalStylesForScore(Number(rec.confidence), { good: 0.75, weak: 0.45 }, "Confidence");
   const riskStyles = risks.length || rec.risk_rating ? signalToneStyles("bad", "Risk present", "octagon-alert") : signalToneStyles("good", "No major risk", "shield-check");
   const isBuy = String(rec.rating || "").toLowerCase() === "buy";
+  const heldPosition = findPortfolioPosition(rec.ticker);
 
   return `
     <article class="soft-panel rounded-lg">
@@ -826,6 +1207,7 @@ function renderRecommendationCard(rec, index) {
               <div class="flex flex-wrap items-center gap-2">
                 <a href="https://finance.yahoo.com/quote/${encodeURIComponent(rec.ticker || "")}" target="_blank" class="text-base font-semibold text-cyan-200 hover:text-cyan-100">${escapeHtml(rec.ticker || "Ticker")}</a>
                 ${ratingBadge(rec.rating)}
+                ${heldPosition ? `<span class="rounded-full border border-cyan-400/20 bg-cyan-400/10 px-2 py-0.5 text-[11px] font-semibold text-cyan-200">Owned</span>` : ""}
               </div>
               <p class="mt-1 truncate text-xs text-slate-500">${escapeHtml(shortReason(rec.reason))}</p>
             </div>
@@ -854,6 +1236,7 @@ function renderRecommendationCard(rec, index) {
         </summary>
         <div class="border-t border-slate-800 p-4">
           <p class="text-sm leading-6 text-slate-300">${escapeHtml(rec.reason || "No reason provided.")}</p>
+          ${renderPositionContext(rec, heldPosition)}
           <div class="mt-4 grid grid-cols-2 gap-2 text-xs text-slate-300 sm:grid-cols-5">
             <div class="rounded-md border p-2 ${opportunityStyles.card}"><span class="block text-slate-500">Opportunity</span>${escapeHtml(score)}</div>
             <div class="rounded-md border p-2 ${confidenceStyles.card}"><span class="block text-slate-500">Confidence</span>${escapeHtml(confidence)}</div>
@@ -876,6 +1259,54 @@ function renderRecommendationCard(rec, index) {
         </div>
       </details>
     </article>
+  `;
+}
+
+function renderPositionContext(rec, position) {
+  if (!position) return "";
+  const price = Number(rec.current_price || 0);
+  const costBasis = position.shares * position.averageCost;
+  const marketValue = price > 0 ? position.shares * price : null;
+  const gainLoss = marketValue !== null ? marketValue - costBasis : null;
+  const gainLossPct = gainLoss !== null && costBasis > 0 ? gainLoss / costBasis : null;
+  const rating = String(rec.rating || "neutral").toLowerCase();
+  const hasRisk = rec.risk_rating || (Array.isArray(rec.risks) && rec.risks.length);
+  let action = signalToneStyles("neutral", "Monitor position", "eye");
+  let message = "This holding is tracked in your portfolio. Use the analysis below to decide whether to hold, add, or trim.";
+  if (rating === "sell") {
+    action = signalToneStyles("bad", "Review sell signal", "octagon-alert");
+    message = "The analysis is flagging an active sell signal for a stock you already own. Review the risk evidence before continuing to hold.";
+  } else if (rating === "hold" || hasRisk) {
+    action = signalToneStyles("weak", "Hold with caution", "triangle-alert");
+    message = "This position has caution signals. It may still be worth holding, but the risk evidence deserves attention.";
+  } else if (rating === "buy") {
+    action = signalToneStyles("good", "Add candidate", "circle-check");
+    message = "You already own this stock and the current analysis still sees constructive opportunity.";
+  }
+
+  const gainClass = gainLoss === null || gainLoss === 0 ? "text-slate-200" : gainLoss > 0 ? "text-emerald-300" : "text-rose-300";
+  const gainText = gainLoss === null
+    ? "N/A"
+    : `${money(gainLoss)} (${gainLossPct === null ? "N/A" : compactPercent(gainLossPct)})`;
+
+  return `
+    <div class="mt-4 rounded-md border ${action.panel} p-3 text-xs text-slate-300">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <div class="font-semibold text-cyan-200">Portfolio position</div>
+        <div class="inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-xs font-semibold ${action.badge}">
+          ${icon(action.icon, "h-3.5 w-3.5")}
+          <span>${escapeHtml(action.label)}</span>
+        </div>
+      </div>
+      <p class="mt-2 leading-5 text-slate-300">${escapeHtml(message)}</p>
+      <div class="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-5">
+        <div class="rounded-md bg-slate-900/80 p-2"><span class="block text-slate-500">Shares</span>${position.shares.toLocaleString(undefined, { maximumFractionDigits: 4 })}</div>
+        <div class="rounded-md bg-slate-900/80 p-2"><span class="block text-slate-500">Avg Cost</span>${escapeHtml(money(position.averageCost))}</div>
+        <div class="rounded-md bg-slate-900/80 p-2"><span class="block text-slate-500">Cost Basis</span>${escapeHtml(money(costBasis))}</div>
+        <div class="rounded-md bg-slate-900/80 p-2"><span class="block text-slate-500">Market Value</span>${escapeHtml(marketValue === null ? "N/A" : money(marketValue))}</div>
+        <div class="rounded-md bg-slate-900/80 p-2"><span class="block text-slate-500">Unrealized P/L</span><span class="${gainClass}">${escapeHtml(gainText)}</span></div>
+      </div>
+    </div>
   `;
 }
 
@@ -1196,6 +1627,9 @@ async function createAnalysis(tickers, options = {}) {
     appendLog(`Analysis queued: ${data.analysis_id}`);
     setActionStatus("Analysis queued. Connecting to live logs...", "success");
     showToast("Analysis started.", "success");
+    if (options.monitor || !tickers.length) {
+      markCandidateDiscovery();
+    }
     await refresh();
     await selectAnalysis(data.analysis_id);
   } catch (e) {
@@ -1370,6 +1804,7 @@ async function deleteAnalysis(id) {
 function wireEvents() {
   els.dashboardNavBtn?.addEventListener("click", () => setActiveView("dashboard"));
   els.settingsNavBtn?.addEventListener("click", () => setActiveView("settings"));
+  els.agentsNavBtn?.addEventListener("click", () => setActiveView("agents"));
   if (els.sidebarToggle) {
     els.sidebarToggle.addEventListener("click", toggleSidebar);
   }
@@ -1382,28 +1817,54 @@ function wireEvents() {
   els.newAnalysisBtn.addEventListener("click", newAnalysis);
   els.monitorBtn.addEventListener("click", startMonitoring);
   els.refreshBtn.addEventListener("click", () => refresh({ spinRefresh: true }));
+  els.refreshCandidates?.addEventListener("click", () => refresh({ discoverCandidates: true, spinCandidates: true }));
+  els.reloadAgentConfig?.addEventListener("click", () => loadAgentConfig());
+  els.saveAgentConfig?.addEventListener("click", saveAgentConfig);
   els.clearLogs.addEventListener("click", () => {
     els.logsConsole.innerHTML = "";
     appendLog("Logs cleared locally.");
   });
   els.savePortfolio.addEventListener("click", () => {
     const available = parseFloat(els.availableBalance.value);
-    const invested = parseFloat(els.investedAmount.value);
-    if (!Number.isFinite(available) || !Number.isFinite(invested)) {
+    if (!Number.isFinite(available)) {
       showToast("Portfolio values are invalid.", "error");
       return;
     }
-    portfolioState = { available, invested };
+    portfolioState = normalizePortfolio({ ...portfolioState, available });
     savePortfolioState(portfolioState);
     updatePortfolioUI(portfolioState);
     showToast("Portfolio saved.", "success");
+  });
+  els.addHolding?.addEventListener("click", () => {
+    const position = {
+      ticker: els.holdingTicker?.value,
+      shares: Number(els.holdingShares?.value || 0),
+      averageCost: Number(els.holdingAverageCost?.value || 0),
+    };
+    if (!upsertPortfolioPosition(position)) {
+      showToast("Enter a ticker, share count, and average cost.", "error");
+      return;
+    }
+    if (els.holdingTicker) els.holdingTicker.value = "";
+    if (els.holdingShares) els.holdingShares.value = "";
+    if (els.holdingAverageCost) els.holdingAverageCost.value = "";
+    showToast(`${normalizeTicker(position.ticker)} holding saved.`, "success");
+  });
+  els.analyzeHoldings?.addEventListener("click", async () => {
+    const tickers = portfolioPositions().map((position) => position.ticker);
+    if (!tickers.length) {
+      showToast("Add at least one holding before running analysis.", "error");
+      return;
+    }
+    setActiveView("dashboard");
+    await createAnalysis(tickers);
   });
   els.saveAnalysisSettings?.addEventListener("click", saveAnalysisSettings);
   els.tradeCancel.addEventListener("click", () => closeModal(els.tradeModal));
   els.tradeConfirm.addEventListener("click", () => {
     if (currentTrade && currentTrade.shares > 0) {
       portfolioState.available = Math.max(0, Number(portfolioState.available || 0) - currentTrade.cost);
-      portfolioState.invested = Number(portfolioState.invested || 0) + currentTrade.cost;
+      addPositionFromTrade(currentTrade);
       savePortfolioState(portfolioState);
       updatePortfolioUI(portfolioState);
       showToast(`${currentTrade.shares} shares of ${currentTrade.ticker} added to the simulation.`, "success");

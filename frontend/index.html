@@ -121,6 +121,10 @@
               <i data-lucide="sliders-horizontal" class="h-4 w-4"></i>
               Financial Settings
             </button>
+            <button id="agents-nav-btn" class="view-nav-btn flex min-w-fit items-center gap-2 rounded-md px-3 py-2 text-sm text-slate-300 hover:bg-slate-900 hover:text-white lg:w-full" data-view="agents">
+              <i data-lucide="bot" class="h-4 w-4"></i>
+              Agent Settings
+            </button>
             <a href="http://localhost:8000/docs" target="_blank" class="flex min-w-fit items-center gap-2 rounded-md px-3 py-2 text-sm text-slate-300 hover:bg-slate-900 hover:text-white lg:w-full">
               <i data-lucide="file-search" class="h-4 w-4"></i>
               API Docs
@@ -203,28 +207,20 @@
         </div>
 
         <div id="settings-view" class="hidden">
-          <section class="mt-5 grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(360px,0.75fr)]">
-            <section class="panel rounded-lg">
-              <div class="border-b border-slate-800 px-4 py-3">
-                <div class="flex items-center gap-2">
-                  <i data-lucide="radar" class="h-4 w-4 text-cyan-300"></i>
-                  <h3 class="text-base font-semibold text-white">Candidate Universe</h3>
-                </div>
-                <p class="mt-1 text-xs text-slate-500">Core list plus agent-discovered names.</p>
-              </div>
-              <div id="candidate-list" class="max-h-[640px] space-y-2 overflow-y-auto p-4 scrollbar-thin"></div>
-            </section>
-
-            <div class="space-y-4">
-              <section id="portfolio-section" class="panel rounded-lg p-4">
-                <div class="flex items-center justify-between">
+          <section class="mt-5 space-y-4">
+            <section id="portfolio-section" class="panel rounded-lg p-4">
+              <div class="flex flex-wrap items-center justify-between gap-3">
+                <div>
                   <h3 class="text-base font-semibold text-white">Portfolio Balance</h3>
-                  <button id="save-portfolio" class="inline-flex items-center gap-2 rounded-md bg-slate-700 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-600">
-                    <i data-lucide="save" class="h-4 w-4"></i>
-                    Save
-                  </button>
+                  <p class="mt-1 text-xs text-slate-500">Cash, existing holdings and tracked cost basis.</p>
                 </div>
-                <div class="mt-4 grid grid-cols-1 gap-3">
+                <button id="save-portfolio" class="inline-flex items-center gap-2 rounded-md bg-slate-700 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-600">
+                  <i data-lucide="save" class="h-4 w-4"></i>
+                  Save
+                </button>
+              </div>
+              <div class="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-[minmax(260px,0.7fr)_minmax(0,1.3fr)]">
+                <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-1">
                   <label class="block">
                     <span class="text-xs text-slate-400">Available Balance</span>
                     <input id="available-balance" type="number" step="0.01" class="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-white outline-none focus:border-cyan-400" />
@@ -234,8 +230,62 @@
                     <input id="invested-amount" type="number" step="0.01" class="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-slate-300 outline-none" readonly />
                   </label>
                 </div>
-              </section>
+                <div class="rounded-md border border-slate-800 bg-slate-950/30 p-3">
+                  <div class="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h4 class="text-sm font-semibold text-white">Existing Holdings</h4>
+                      <p class="mt-1 text-xs text-slate-500">Track stocks you already own so sell and hold signals have portfolio context.</p>
+                    </div>
+                    <button id="analyze-holdings" class="inline-flex items-center gap-2 rounded-md bg-slate-800 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-700">
+                      <i data-lucide="activity" class="h-4 w-4"></i>
+                      Analyze Holdings
+                    </button>
+                  </div>
+                  <div class="mt-4 grid grid-cols-1 gap-3 md:grid-cols-[minmax(100px,0.7fr)_minmax(120px,1fr)_minmax(140px,1fr)_auto] md:items-end">
+                    <label class="block">
+                      <span class="text-xs text-slate-400">Ticker</span>
+                      <input id="holding-ticker" type="text" placeholder="MSFT" class="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-white uppercase outline-none focus:border-cyan-400" />
+                    </label>
+                    <label class="block">
+                      <span class="text-xs text-slate-400">Shares</span>
+                      <input id="holding-shares" type="number" min="0" step="0.0001" class="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-white outline-none focus:border-cyan-400" />
+                    </label>
+                    <label class="block">
+                      <span class="text-xs text-slate-400">Average Cost</span>
+                      <input id="holding-average-cost" type="number" min="0" step="0.01" class="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-white outline-none focus:border-cyan-400" />
+                    </label>
+                    <button id="add-holding" class="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-cyan-500 px-3 py-2 text-xs font-semibold text-slate-950 hover:bg-cyan-400">
+                      <i data-lucide="plus" class="h-4 w-4"></i>
+                      Add / Update
+                    </button>
+                  </div>
+                  <div id="holdings-list" class="mt-4 grid grid-cols-1 gap-2 xl:grid-cols-2"></div>
+                </div>
+              </div>
+            </section>
 
+            <div class="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(360px,0.75fr)]">
+            <section class="panel rounded-lg">
+              <div class="border-b border-slate-800 px-4 py-3">
+                <div class="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <div class="flex items-center gap-2">
+                      <i data-lucide="radar" class="h-4 w-4 text-cyan-300"></i>
+                      <h3 class="text-base font-semibold text-white">Candidate Universe</h3>
+                    </div>
+                    <p class="mt-1 text-xs text-slate-500">Core list plus agent-discovered names.</p>
+                    <p id="candidate-refresh-meta" class="mt-1 text-xs text-slate-600"></p>
+                  </div>
+                  <button id="refresh-candidates" class="inline-flex items-center gap-2 rounded-md bg-slate-800 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-700">
+                    <i data-lucide="refresh-cw" class="h-4 w-4"></i>
+                    Refresh Universe
+                  </button>
+                </div>
+              </div>
+              <div id="candidate-list" class="max-h-[640px] space-y-2 overflow-y-auto p-4 scrollbar-thin"></div>
+            </section>
+
+            <div class="space-y-4">
               <section class="panel rounded-lg p-4">
                 <div class="flex items-center justify-between">
                   <h3 class="text-base font-semibold text-white">Analysis Preferences</h3>
@@ -273,9 +323,63 @@
                       <option value="aggressive">Aggressive</option>
                     </select>
                   </label>
+                  <label class="block">
+                    <span class="text-xs text-slate-400">Candidate Refresh</span>
+                    <select id="setting-candidate-refresh" class="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-white outline-none focus:border-cyan-400">
+                      <option value="monitor">On monitor run</option>
+                      <option value="daily">Daily</option>
+                      <option value="weekly">Weekly</option>
+                      <option value="manual">Manual only</option>
+                    </select>
+                  </label>
                 </div>
               </section>
             </div>
+            </div>
+          </section>
+        </div>
+
+        <div id="agents-view" class="hidden">
+          <section class="mt-5 space-y-4">
+            <section class="panel rounded-lg p-4">
+              <div class="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h3 class="text-base font-semibold text-white">Agent Workflow Settings</h3>
+                  <p class="mt-1 text-xs text-slate-500">Tune agent roles, goals, task prompts, expected outputs, and the LLM used for new analysis runs.</p>
+                </div>
+                <div class="flex flex-wrap gap-2">
+                  <button id="reload-agent-config" class="inline-flex items-center gap-2 rounded-md bg-slate-800 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-700">
+                    <i data-lucide="rotate-ccw" class="h-4 w-4"></i>
+                    Reload
+                  </button>
+                  <button id="save-agent-config" class="inline-flex items-center gap-2 rounded-md bg-cyan-500 px-3 py-2 text-xs font-semibold text-slate-950 hover:bg-cyan-400">
+                    <i data-lucide="save" class="h-4 w-4"></i>
+                    Save Agent Settings
+                  </button>
+                </div>
+              </div>
+              <div class="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-[minmax(220px,1fr)_140px]">
+                <label class="block">
+                  <span class="text-xs text-slate-400">LLM Model</span>
+                  <input id="agent-llm-model" type="text" placeholder="gpt-4o" class="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-white outline-none focus:border-cyan-400" />
+                </label>
+                <label class="block">
+                  <span class="text-xs text-slate-400">Temperature</span>
+                  <input id="agent-llm-temperature" type="number" min="0" max="2" step="0.1" class="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-white outline-none focus:border-cyan-400" />
+                </label>
+              </div>
+            </section>
+
+            <section class="grid grid-cols-1 gap-4 xl:grid-cols-[280px_minmax(0,1fr)]">
+              <aside class="panel rounded-lg p-3">
+                <div class="mb-3 flex items-center gap-2 text-sm font-semibold text-white">
+                  <i data-lucide="users-round" class="h-4 w-4 text-cyan-300"></i>
+                  Agents
+                </div>
+                <div id="agent-config-list" class="space-y-2"></div>
+              </aside>
+              <div id="agent-config-editor" class="space-y-4"></div>
+            </section>
           </section>
         </div>
 

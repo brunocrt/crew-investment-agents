@@ -20,11 +20,13 @@ import json
 import logging
 import sys
 from datetime import datetime
-from typing import Awaitable, Callable, Dict, List
+from pathlib import Path
+from typing import Any, Awaitable, Callable, Dict, List
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+import yaml
 
 from .models.analysis import Analysis, LogEntry, AnalysisStatus
 from .models.candidate import Candidate
@@ -141,6 +143,12 @@ class AnalysisCreateRequest(BaseModel):
     tickers: List[str] | None = None
 
 
+class AgentConfigUpdateRequest(BaseModel):
+    agents: Dict[str, Dict[str, Any]]
+    tasks: Dict[str, Dict[str, Any]]
+    llm: Dict[str, Any]
+
+
 def _parse_crew_json(result_str: str) -> dict:
     """Parse CrewAI JSON output, including JSON wrapped in Markdown fences."""
     text = result_str.strip()
@@ -152,6 +160,26 @@ def _parse_crew_json(result_str: str) -> dict:
             lines = lines[:-1]
         text = "\n".join(lines).strip()
     return json.loads(text)
+
+
+CONFIG_DIR = Path(__file__).resolve().parent / "config"
+AGENTS_CONFIG_PATH = CONFIG_DIR / "agents.yaml"
+TASKS_CONFIG_PATH = CONFIG_DIR / "tasks.yaml"
+LLM_CONFIG_PATH = CONFIG_DIR / "llm.yaml"
+
+
+def _read_yaml(path: Path, default: Any) -> Any:
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            return yaml.safe_load(handle) or default
+    except FileNotFoundError:
+        return default
+
+
+def _write_yaml(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(payload, handle, sort_keys=False, allow_unicode=True)
 
 
 @app.post("/analyses", status_code=201)
@@ -224,6 +252,32 @@ async def get_candidates(discover: bool = False):
             }
             for candidate in candidates
         ]
+
+
+@app.get("/agent-config")
+async def get_agent_config():
+    """Return editable agent, task and LLM configuration."""
+    return {
+        "agents": _read_yaml(AGENTS_CONFIG_PATH, {}),
+        "tasks": _read_yaml(TASKS_CONFIG_PATH, {}),
+        "llm": _read_yaml(LLM_CONFIG_PATH, {"model": "gpt-4o", "temperature": 0.3}),
+    }
+
+
+@app.put("/agent-config")
+async def update_agent_config(request: AgentConfigUpdateRequest):
+    """Persist agent, task and LLM configuration for future analysis runs."""
+    llm = {
+        "model": str(request.llm.get("model") or "gpt-4o").strip(),
+        "temperature": float(request.llm.get("temperature", 0.3)),
+    }
+    if not llm["model"]:
+        llm["model"] = "gpt-4o"
+    llm["temperature"] = max(0.0, min(2.0, llm["temperature"]))
+    _write_yaml(AGENTS_CONFIG_PATH, request.agents)
+    _write_yaml(TASKS_CONFIG_PATH, request.tasks)
+    _write_yaml(LLM_CONFIG_PATH, llm)
+    return {"status": "saved", "llm": llm}
 
 
 @app.get("/analyses/{analysis_id}")

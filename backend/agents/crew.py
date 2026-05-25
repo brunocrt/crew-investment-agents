@@ -156,6 +156,7 @@ class InvestmentRecommendationCrew:
     _module_dir = os.path.dirname(__file__)
     agents_config = os.path.abspath(os.path.join(_module_dir, '..', 'config', 'agents.yaml'))
     tasks_config = os.path.abspath(os.path.join(_module_dir, '..', 'config', 'tasks.yaml'))
+    llm_config = os.path.abspath(os.path.join(_module_dir, '..', 'config', 'llm.yaml'))
 
     def __init__(self) -> None:
         # Initialise the underlying language model.  Instead of relying on
@@ -174,6 +175,13 @@ class InvestmentRecommendationCrew:
         # account.【783991777702297†L207-L263】
         model_name = os.getenv('OPENAI_MODEL', os.getenv('OPENAI_MODEL_NAME', 'gpt-4o'))
         temperature = float(os.getenv('OPENAI_TEMPERATURE', '0.3'))
+        try:
+            with open(self.__class__.llm_config, 'r', encoding='utf-8') as f:
+                llm_config = yaml.safe_load(f) or {}
+            model_name = llm_config.get('model') or model_name
+            temperature = float(llm_config.get('temperature', temperature))
+        except Exception:
+            llm_config = {}
         # When the OPENAI_API_KEY is set in the environment, LiteLLM will
         # automatically authenticate requests.  Additional parameters such
         # as ``base_url`` may be provided via environment variables (e.g.
