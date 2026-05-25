@@ -21,16 +21,33 @@ const els = {
   historyTitle: document.getElementById("history-title"),
   investedAmount: document.getElementById("invested-amount"),
   lastRefresh: document.getElementById("last-refresh"),
+  logsCollapseBtn: document.getElementById("logs-collapse-btn"),
   logsConsole: document.getElementById("logs-console"),
+  logsPanelBody: document.getElementById("logs-panel-body"),
   logsSubtitle: document.getElementById("logs-subtitle"),
   monitorBtn: document.getElementById("monitor-btn"),
   newAnalysisBtn: document.getElementById("new-analysis-btn"),
+  portfolioSummary: document.getElementById("portfolio-summary"),
   recommendations: document.getElementById("recommendations"),
   refreshBtn: document.getElementById("refresh-btn"),
+  reportCollapseBtn: document.getElementById("report-collapse-btn"),
+  reportPanelBody: document.getElementById("report-panel-body"),
   reportSummary: document.getElementById("report-summary"),
+  dashboardNavBtn: document.getElementById("dashboard-nav-btn"),
+  dashboardView: document.getElementById("dashboard-view"),
+  saveAnalysisSettings: document.getElementById("save-analysis-settings"),
   savePortfolio: document.getElementById("save-portfolio"),
   selectedAnalysisLabel: document.getElementById("selected-analysis-label"),
   selectedStatus: document.getElementById("selected-status"),
+  settingMinOpportunity: document.getElementById("setting-min-opportunity"),
+  settingMinValuation: document.getElementById("setting-min-valuation"),
+  settingPositionSize: document.getElementById("setting-position-size"),
+  settingRiskTolerance: document.getElementById("setting-risk-tolerance"),
+  settingStopLoss: document.getElementById("setting-stop-loss"),
+  settingTargetGain: document.getElementById("setting-target-gain"),
+  settingsNavBtn: document.getElementById("settings-nav-btn"),
+  settingsView: document.getElementById("settings-view"),
+  sidebarToggle: document.getElementById("sidebar-toggle"),
   sidebarStatus: document.getElementById("sidebar-status"),
   statsContainer: document.getElementById("stats-container"),
   toastStack: document.getElementById("toast-stack"),
@@ -46,6 +63,10 @@ let currentTrade = null;
 let selectedAnalysisId = null;
 let analysesCache = [];
 let portfolioState = loadPortfolio();
+let sidebarCollapsed = localStorage.getItem("sidebar-collapsed") === "true";
+let panelCollapseState = loadPanelCollapseState();
+let activeView = localStorage.getItem("active-view") || "dashboard";
+let analysisSettings = loadAnalysisSettings();
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -66,8 +87,134 @@ function refreshIcons() {
   }
 }
 
+function applySidebarState() {
+  document.body.classList.toggle("sidebar-collapsed", sidebarCollapsed);
+  if (!els.sidebarToggle) return;
+  els.sidebarToggle.setAttribute("aria-expanded", String(!sidebarCollapsed));
+  els.sidebarToggle.title = sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar";
+  els.sidebarToggle.setAttribute("aria-label", sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar");
+  els.sidebarToggle.innerHTML = sidebarCollapsed
+    ? icon("panel-left-open", "h-4 w-4")
+    : icon("panel-left-close", "h-4 w-4");
+  refreshIcons();
+}
+
+function toggleSidebar() {
+  sidebarCollapsed = !sidebarCollapsed;
+  localStorage.setItem("sidebar-collapsed", String(sidebarCollapsed));
+  applySidebarState();
+}
+
+function setActiveView(view) {
+  activeView = view === "settings" ? "settings" : "dashboard";
+  localStorage.setItem("active-view", activeView);
+  const isSettings = activeView === "settings";
+  els.dashboardView?.classList.toggle("hidden", isSettings);
+  els.settingsView?.classList.toggle("hidden", !isSettings);
+  updateViewNav();
+}
+
+function updateViewNav() {
+  [
+    { button: els.dashboardNavBtn, view: "dashboard" },
+    { button: els.settingsNavBtn, view: "settings" },
+  ].forEach(({ button, view }) => {
+    if (!button) return;
+    const active = activeView === view;
+    button.className = active
+      ? "view-nav-btn flex min-w-fit items-center gap-2 rounded-md bg-slate-800 px-3 py-2 text-sm font-medium text-white lg:w-full"
+      : "view-nav-btn flex min-w-fit items-center gap-2 rounded-md px-3 py-2 text-sm text-slate-300 hover:bg-slate-900 hover:text-white lg:w-full";
+  });
+  refreshIcons();
+}
+
+function loadPanelCollapseState() {
+  const defaults = { report: false, logs: false };
+  try {
+    return { ...defaults, ...JSON.parse(localStorage.getItem("panel-collapse-state") || "{}") };
+  } catch (e) {
+    return defaults;
+  }
+}
+
+function loadAnalysisSettings() {
+  const defaults = {
+    positionSizePct: 5,
+    stopLossPct: 10,
+    targetGainPct: 20,
+    minOpportunityScore: 70,
+    minValuationScore: 35,
+    riskTolerance: "balanced",
+  };
+  try {
+    return { ...defaults, ...JSON.parse(localStorage.getItem("analysis-settings") || "{}") };
+  } catch (e) {
+    return defaults;
+  }
+}
+
+function saveAnalysisSettings() {
+  analysisSettings = {
+    positionSizePct: clampNumber(els.settingPositionSize?.value, 1, 100, 5),
+    stopLossPct: clampNumber(els.settingStopLoss?.value, 1, 80, 10),
+    targetGainPct: clampNumber(els.settingTargetGain?.value, 1, 300, 20),
+    minOpportunityScore: clampNumber(els.settingMinOpportunity?.value, 0, 100, 70),
+    minValuationScore: clampNumber(els.settingMinValuation?.value, 0, 100, 35),
+    riskTolerance: els.settingRiskTolerance?.value || "balanced",
+  };
+  localStorage.setItem("analysis-settings", JSON.stringify(analysisSettings));
+  updateAnalysisSettingsUI();
+  showToast("Analysis settings saved.", "success");
+}
+
+function updateAnalysisSettingsUI() {
+  if (els.settingPositionSize) els.settingPositionSize.value = Number(analysisSettings.positionSizePct).toFixed(1);
+  if (els.settingStopLoss) els.settingStopLoss.value = Number(analysisSettings.stopLossPct).toFixed(1);
+  if (els.settingTargetGain) els.settingTargetGain.value = Number(analysisSettings.targetGainPct).toFixed(1);
+  if (els.settingMinOpportunity) els.settingMinOpportunity.value = Number(analysisSettings.minOpportunityScore).toFixed(0);
+  if (els.settingMinValuation) els.settingMinValuation.value = Number(analysisSettings.minValuationScore).toFixed(0);
+  if (els.settingRiskTolerance) els.settingRiskTolerance.value = analysisSettings.riskTolerance || "balanced";
+}
+
+function clampNumber(value, min, max, fallback) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.max(min, Math.min(max, number));
+}
+
+function savePanelCollapseState() {
+  localStorage.setItem("panel-collapse-state", JSON.stringify(panelCollapseState));
+}
+
+function applyCollapsiblePanelState(panelName) {
+  const isCollapsed = Boolean(panelCollapseState[panelName]);
+  const body = panelName === "report" ? els.reportPanelBody : els.logsPanelBody;
+  const button = panelName === "report" ? els.reportCollapseBtn : els.logsCollapseBtn;
+  if (!body || !button) return;
+  body.classList.toggle("hidden", isCollapsed);
+  button.setAttribute("aria-expanded", String(!isCollapsed));
+  button.title = isCollapsed ? `Expand ${panelName}` : `Collapse ${panelName}`;
+  button.innerHTML = isCollapsed
+    ? icon("chevron-down", "h-4 w-4")
+    : icon("chevron-up", "h-4 w-4");
+  refreshIcons();
+}
+
+function togglePanel(panelName) {
+  panelCollapseState[panelName] = !panelCollapseState[panelName];
+  savePanelCollapseState();
+  applyCollapsiblePanelState(panelName);
+}
+
+function applyPanelCollapseStates() {
+  applyCollapsiblePanelState("report");
+  applyCollapsiblePanelState("logs");
+}
+
 function formatDateTime(timestamp) {
   if (!timestamp) return "";
+  const date = parseTimestamp(timestamp);
+  if (!date) return "";
   return new Intl.DateTimeFormat("en-US", {
     timeZone: "America/New_York",
     year: "numeric",
@@ -75,17 +222,29 @@ function formatDateTime(timestamp) {
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
-  }).format(new Date(timestamp));
+  }).format(date);
 }
 
 function timeAgo(timestamp) {
-  const diff = Date.now() - new Date(timestamp).getTime();
+  const date = parseTimestamp(timestamp);
+  if (!date) return "";
+  const diff = Date.now() - date.getTime();
   const minutes = Math.max(0, Math.floor(diff / 60000));
   if (minutes < 1) return "just now";
   if (minutes < 60) return `${minutes}m ago`;
   const hours = Math.floor(minutes / 60);
   if (hours < 24) return `${hours}h ago`;
   return `${Math.floor(hours / 24)}d ago`;
+}
+
+function parseTimestamp(timestamp) {
+  if (!timestamp) return null;
+  if (timestamp instanceof Date) return timestamp;
+  const text = String(timestamp);
+  const hasTimezone = /(?:Z|[+-]\d{2}:?\d{2})$/.test(text);
+  const normalized = hasTimezone ? text : `${text}Z`;
+  const date = new Date(normalized);
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 function money(value) {
@@ -147,6 +306,36 @@ function savePortfolioState(portfolio) {
 function updatePortfolioUI(portfolio) {
   els.availableBalance.value = Number(portfolio.available || 0).toFixed(2);
   els.investedAmount.value = Number(portfolio.invested || 0).toFixed(2);
+  renderPortfolioSummary(portfolio);
+}
+
+function renderPortfolioSummary(portfolio) {
+  if (!els.portfolioSummary) return;
+  const available = Number(portfolio.available || 0);
+  const invested = Number(portfolio.invested || 0);
+  const total = available + invested;
+  const investedPct = total > 0 ? invested / total : 0;
+  const availablePct = total > 0 ? available / total : 0;
+  const summary = [
+    { title: "Available Funds", value: money(available), meta: `${compactPercent(availablePct)} of portfolio`, icon: "wallet", accent: "text-emerald-300" },
+    { title: "Invested Funds", value: money(invested), meta: `${compactPercent(investedPct)} deployed`, icon: "briefcase-business", accent: "text-cyan-300" },
+    { title: "Total Tracked", value: money(total), meta: "Simulated portfolio value", icon: "landmark", accent: "text-slate-300" },
+  ];
+  els.portfolioSummary.innerHTML = summary
+    .map((item) => `
+      <article class="panel rounded-lg p-4">
+        <div class="flex items-center justify-between gap-3">
+          <span class="text-sm text-slate-400">${escapeHtml(item.title)}</span>
+          ${icon(item.icon, `h-5 w-5 ${item.accent}`)}
+        </div>
+        <div class="mt-3 flex flex-wrap items-end justify-between gap-2">
+          <p class="text-2xl font-semibold text-white">${escapeHtml(item.value)}</p>
+          <p class="pb-1 text-xs text-slate-500">${escapeHtml(item.meta)}</p>
+        </div>
+      </article>
+    `)
+    .join("");
+  refreshIcons();
 }
 
 function setApiStatus(state, label) {
@@ -226,7 +415,7 @@ async function refresh(options = {}) {
     renderStats(analyses);
     renderAnalyses(analyses);
     renderCandidateUniverse(candidates);
-    els.lastRefresh.textContent = `Updated ${formatDateTime(new Date().toISOString())}`;
+    els.lastRefresh.textContent = `Updated ${formatDateTime(new Date())}`;
     setApiStatus("online", "Online");
 
     const selected = analyses.find((item) => item.id === selectedAnalysisId);
@@ -622,7 +811,7 @@ function renderRecommendationCard(rec, index) {
   const valuationLabel = valuation?.label || "N/A";
   const valuationScore = valuation && Number.isFinite(Number(valuation.valuation_score)) ? Number(valuation.valuation_score) * 100 : null;
   const valuationDisplay = valuationScore !== null ? `${valuationScore.toFixed(0)}` : "N/A";
-  const opportunityStyles = signalStylesForScore(Number(rec.score), { good: 70, weak: 45 }, "Opportunity");
+  const opportunityStyles = signalStylesForScore(Number(rec.score), { good: Number(analysisSettings.minOpportunityScore || 70), weak: 45 }, "Opportunity");
   const confidenceStyles = signalStylesForScore(Number(rec.confidence), { good: 0.75, weak: 0.45 }, "Confidence");
   const riskStyles = risks.length || rec.risk_rating ? signalToneStyles("bad", "Risk present", "octagon-alert") : signalToneStyles("good", "No major risk", "shield-check");
   const isBuy = String(rec.rating || "").toLowerCase() === "buy";
@@ -1032,10 +1221,10 @@ async function startMonitoring() {
 
 function openTradeModal(rec) {
   const price = Number(rec.current_price || 0);
-  const maxSpend = Number(portfolioState.available || 0) * 0.05;
+  const maxSpend = Number(portfolioState.available || 0) * (Number(analysisSettings.positionSizePct || 5) / 100);
   const shares = price > 0 ? Math.floor(maxSpend / price) : 0;
-  const stopPrice = price ? price * 0.9 : 0;
-  const targetPrice = price ? price * 1.2 : 0;
+  const stopPrice = price ? price * (1 - Number(analysisSettings.stopLossPct || 10) / 100) : 0;
+  const targetPrice = price ? price * (1 + Number(analysisSettings.targetGainPct || 20) / 100) : 0;
   els.tradeTitle.textContent = `Trade ${String(rec.rating || "").toUpperCase()} - ${rec.ticker}`;
   els.tradeBody.innerHTML = `
     <div class="rounded-md bg-slate-950/60 p-3 text-sm">
@@ -1179,6 +1368,17 @@ async function deleteAnalysis(id) {
 }
 
 function wireEvents() {
+  els.dashboardNavBtn?.addEventListener("click", () => setActiveView("dashboard"));
+  els.settingsNavBtn?.addEventListener("click", () => setActiveView("settings"));
+  if (els.sidebarToggle) {
+    els.sidebarToggle.addEventListener("click", toggleSidebar);
+  }
+  if (els.reportCollapseBtn) {
+    els.reportCollapseBtn.addEventListener("click", () => togglePanel("report"));
+  }
+  if (els.logsCollapseBtn) {
+    els.logsCollapseBtn.addEventListener("click", () => togglePanel("logs"));
+  }
   els.newAnalysisBtn.addEventListener("click", newAnalysis);
   els.monitorBtn.addEventListener("click", startMonitoring);
   els.refreshBtn.addEventListener("click", () => refresh({ spinRefresh: true }));
@@ -1198,6 +1398,7 @@ function wireEvents() {
     updatePortfolioUI(portfolioState);
     showToast("Portfolio saved.", "success");
   });
+  els.saveAnalysisSettings?.addEventListener("click", saveAnalysisSettings);
   els.tradeCancel.addEventListener("click", () => closeModal(els.tradeModal));
   els.tradeConfirm.addEventListener("click", () => {
     if (currentTrade && currentTrade.shares > 0) {
@@ -1219,7 +1420,11 @@ function wireEvents() {
 }
 
 async function init() {
+  applySidebarState();
+  applyPanelCollapseStates();
+  setActiveView(activeView);
   refreshIcons();
+  updateAnalysisSettingsUI();
   updatePortfolioUI(portfolioState);
   setApiStatus("checking", "Checking");
   setEmptyReport("Select or start an analysis.");
