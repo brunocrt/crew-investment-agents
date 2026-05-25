@@ -1,0 +1,10 @@
+.git
+.crewai
+venv
+__pycache__
+*.pyc
+.env
+app.db
+*.db
+spec.md
+buildandrun.bat
