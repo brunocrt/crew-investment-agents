@@ -332,7 +332,11 @@ async def run_analysis(analysis_id: str, tickers_str: str) -> None:
                             info = get_stock_price_info(normalized_ticker)
                             if info:
                                 rec['current_price'] = info.get('current_price')
+                                rec['past_price'] = info.get('past_price')
                                 rec['percent_change'] = info.get('percent_change')
+                                rec['price_change_start_date'] = info.get('price_change_start_date')
+                                rec['price_change_end_date'] = info.get('price_change_end_date')
+                                rec['price_change_window_days'] = info.get('price_change_window_days')
                             # attach a report timestamp in ISO format
                             rec['report_time'] = datetime.utcnow().isoformat()
                             score = signal_scores.get(normalized_ticker)
@@ -370,7 +374,11 @@ async def run_analysis(analysis_id: str, tickers_str: str) -> None:
                             }
                             if info:
                                 neutral_entry['current_price'] = info.get('current_price')
+                                neutral_entry['past_price'] = info.get('past_price')
                                 neutral_entry['percent_change'] = info.get('percent_change')
+                                neutral_entry['price_change_start_date'] = info.get('price_change_start_date')
+                                neutral_entry['price_change_end_date'] = info.get('price_change_end_date')
+                                neutral_entry['price_change_window_days'] = info.get('price_change_window_days')
                             neutral_entry['report_time'] = datetime.utcnow().isoformat()
                             if score:
                                 neutral_entry['score'] = score.get('final_score')

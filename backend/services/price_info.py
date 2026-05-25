@@ -13,7 +13,8 @@ the function returns ``None``.
 
 from __future__ import annotations
 
-from typing import Optional, Dict
+from datetime import timedelta
+from typing import Dict, Optional
 
 import yfinance as yf
 
@@ -34,22 +35,28 @@ def get_stock_price_info(ticker: str, window_days: int = 30) -> Optional[Dict[st
     dict or None
         A dictionary with keys ``current_price`` and ``percent_change``
         representing the latest closing price and the fractional change
-        relative to the closing price ``window_days`` days ago.  Returns
-        ``None`` if price data is unavailable or insufficient.
+        relative to the closing price on or before ``window_days`` calendar
+        days ago.  Returns ``None`` if price data is unavailable or
+        insufficient.
     """
     try:
-        # Retrieve a bit more history to ensure we have at least ``window_days``
-        # trading sessions (markets close on weekends and holidays).
-        hist = yf.Ticker(ticker).history(period=f"{window_days + 5}d")
+        # Fetch enough data to locate the trading close nearest to the
+        # calendar lookback date, accounting for weekends and market holidays.
+        hist = yf.Ticker(ticker).history(period=f"{window_days + 20}d")
         if hist.empty or 'Close' not in hist.columns:
             return None
         hist = hist.dropna(subset=['Close'])
+        if hist.empty:
+            return None
+
+        latest_date = hist.index[-1]
+        target_date = latest_date - timedelta(days=window_days)
+        prior_rows = hist[hist.index <= target_date]
+        if prior_rows.empty:
+            return None
+
         current_price = float(hist['Close'].iloc[-1])
-        if len(hist) <= window_days:
-            # If we don't have enough data, use the earliest available price
-            past_price = float(hist['Close'].iloc[0])
-        else:
-            past_price = float(hist['Close'].iloc[-window_days])
+        past_price = float(prior_rows['Close'].iloc[-1])
         # Avoid division by zero
         if past_price == 0:
             percent_change = None
@@ -57,7 +64,11 @@ def get_stock_price_info(ticker: str, window_days: int = 30) -> Optional[Dict[st
             percent_change = (current_price - past_price) / past_price
         return {
             'current_price': current_price,
+            'past_price': past_price,
             'percent_change': percent_change,
+            'price_change_start_date': prior_rows.index[-1].date().isoformat(),
+            'price_change_end_date': latest_date.date().isoformat(),
+            'price_change_window_days': window_days,
         }
     except Exception:
         return None

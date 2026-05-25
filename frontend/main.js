@@ -102,6 +102,19 @@ function percent(value) {
   return `${(Number(value) * 100).toFixed(2)}%`;
 }
 
+function priceChangeLabel(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "N/A";
+  if (number === 0) return "0.00% flat";
+  return `${Math.abs(number * 100).toFixed(2)}% ${number > 0 ? "up" : "down"}`;
+}
+
+function priceChangeClass(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number === 0) return "text-slate-200";
+  return number > 0 ? "text-emerald-300" : "text-rose-300";
+}
+
 function loadPortfolio() {
   const stored = localStorage.getItem("portfolio");
   if (stored) {
@@ -481,7 +494,11 @@ function renderRecommendationCard(rec, index) {
   const score = rec.score !== undefined && rec.score !== null ? Number(rec.score).toFixed(0) : "N/A";
   const confidence = rec.confidence !== undefined && rec.confidence !== null ? `${Math.round(Number(rec.confidence) * 100)}%` : "N/A";
   const price = rec.current_price !== undefined && rec.current_price !== null ? money(rec.current_price) : "N/A";
-  const change = percent(rec.percent_change) || "N/A";
+  const change = priceChangeLabel(rec.percent_change);
+  const changeClass = priceChangeClass(rec.percent_change);
+  const changeTitle = rec.price_change_start_date && rec.price_change_end_date
+    ? `From ${rec.price_change_start_date} to ${rec.price_change_end_date}`
+    : "Latest close versus roughly 30 calendar days earlier";
   const reportTime = formatDateTime(rec.report_time) || "N/A";
   const evidence = Array.isArray(rec.evidence) ? rec.evidence : [];
   const risks = Array.isArray(rec.risks) ? rec.risks : [];
@@ -512,7 +529,7 @@ function renderRecommendationCard(rec, index) {
             <div class="flex items-center justify-end gap-2">
               <div>
                 <span class="block text-slate-500">30d</span>
-                <span class="font-semibold text-white">${escapeHtml(change)}</span>
+                <span class="font-semibold ${changeClass}" title="${escapeHtml(changeTitle)}">${escapeHtml(change)}</span>
               </div>
               <i data-lucide="chevron-down" class="h-4 w-4 text-slate-500 transition group-open:rotate-180"></i>
             </div>
@@ -736,7 +753,7 @@ async function openHistoryModal(ticker) {
                 </div>
                 <div class="mt-2 flex flex-wrap gap-2 text-xs text-slate-400">
                   <span>${money(entry.current_price)}</span>
-                  <span>${percent(entry.percent_change)}</span>
+                  <span class="${priceChangeClass(entry.percent_change)}">${priceChangeLabel(entry.percent_change)}</span>
                 </div>
                 <p class="mt-2 text-sm leading-6 text-slate-300">${escapeHtml(entry.reason || "")}</p>
               </article>
