@@ -30,7 +30,12 @@ signals) across this set when no explicit tickers are provided.
 
 from __future__ import annotations
 
+import logging
 from typing import List
+
+import yfinance as yf
+
+logger = logging.getLogger(__name__)
 
 
 def get_default_candidate_tickers() -> List[str]:
@@ -71,3 +76,31 @@ def get_default_candidate_tickers() -> List[str]:
         'AMZN',  # Amazon.com
         'AVGO',  # Broadcom – semiconductor and networking
     ]
+
+
+def discover_candidate_tickers(limit: int = 20) -> List[str]:
+    """Rank the default universe by recent momentum and return top candidates.
+
+    This keeps the curated universe as the source of truth, then orders it
+    using public price data. If market data is unavailable, the static
+    watch-list is returned.
+    """
+    universe = get_default_candidate_tickers()
+    scored: List[tuple[float, str]] = []
+    for ticker in universe:
+        try:
+            hist = yf.Ticker(ticker).history(period="6mo")
+            if hist.empty or "Close" not in hist.columns:
+                continue
+            closes = hist["Close"].dropna()
+            if len(closes) < 20:
+                continue
+            momentum = (float(closes.iloc[-1]) / float(closes.iloc[0])) - 1
+            volatility = float(closes.pct_change().dropna().std() or 0.0)
+            scored.append((momentum - (volatility * 0.5), ticker))
+        except Exception as exc:
+            logger.info("Candidate scoring failed for %s: %s", ticker, exc)
+    if not scored:
+        return universe[:limit]
+    scored.sort(reverse=True)
+    return [ticker for _, ticker in scored[:limit]]

@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import List, Dict
+from typing import Any, List, Dict
 
 from crewai import Agent, Crew, Process, Task
 import numpy as np  # for boolean type checking in tool cleanup

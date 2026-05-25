@@ -31,6 +31,18 @@ function timeAgo(timestamp) {
   return `${days}d ago`;
 }
 
+function formatDateTime(timestamp) {
+  if (!timestamp) return "";
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(timestamp));
+}
+
 // Portfolio management
 function loadPortfolio() {
   const stored = localStorage.getItem("portfolio");
@@ -62,12 +74,13 @@ function updatePortfolioUI(portfolio) {
 function renderStats(analyses) {
   const total = analyses.length;
   const running = analyses.filter((a) => a.status === "running").length;
+  const completed = analyses.filter((a) => a.status === "completed").length;
   const statsContainer = document.getElementById("stats-container");
   statsContainer.innerHTML = "";
   const stats = [
     { title: "Total Analyses", value: total },
     { title: "Active Agents", value: running },
-    { title: "Market Status", value: "Online" },
+    { title: "Completed", value: completed },
   ];
   stats.forEach((stat) => {
     const div = document.createElement("div");
@@ -91,7 +104,7 @@ function renderAnalyses(analyses) {
     card.className = `${statusColour} p-4 rounded cursor-pointer hover:bg-gray-700 relative`;
     card.dataset.id = analysis.id;
     // Format creation time as locale string
-    const createdAt = new Date(analysis.created_at).toLocaleString();
+    const createdAt = formatDateTime(analysis.created_at);
     // HTML structure with delete button
     card.innerHTML = `
       <div class="flex justify-between items-start">
@@ -142,7 +155,8 @@ async function selectAnalysis(id) {
     appendLog(entry.message);
   });
   // Open WebSocket for live updates
-  const socket = new WebSocket(`ws://localhost:8000/ws/${id}`);
+  const wsBase = API_BASE.replace(/^http/, "ws");
+  const socket = new WebSocket(`${wsBase}/ws/${id}`);
   socket.onmessage = (event) => {
     appendLog(event.data);
   };
@@ -179,6 +193,13 @@ async function displayReport(analysisId) {
     let summaryText = analysis.summary || "";
     let recs = [];
     // Attempt to parse JSON summary to extract recommendations and summary
+    const trimmedSummary = summaryText.trim();
+    if (trimmedSummary.startsWith("```")) {
+      summaryText = trimmedSummary
+        .replace(/^```(?:json)?/i, "")
+        .replace(/```$/, "")
+        .trim();
+    }
     if (summaryText && summaryText.trim().startsWith("{")) {
       try {
         const parsed = JSON.parse(summaryText);
@@ -212,10 +233,13 @@ async function displayReport(analysisId) {
       thead.innerHTML = `<tr>
         <th class="px-2 py-1 border-b">Ticker</th>
         <th class="px-2 py-1 border-b">Rating</th>
+        <th class="px-2 py-1 border-b">Score</th>
+        <th class="px-2 py-1 border-b">Confidence</th>
         <th class="px-2 py-1 border-b">Price</th>
         <th class="px-2 py-1 border-b">% Change (30d)</th>
         <th class="px-2 py-1 border-b">Report Time</th>
         <th class="px-2 py-1 border-b">Reason</th>
+        <th class="px-2 py-1 border-b">Actions</th>
       </tr>`;
       table.appendChild(thead);
       const tbody = document.createElement("tbody");
@@ -225,19 +249,49 @@ async function displayReport(analysisId) {
         const priceVal = rec.current_price !== undefined ? parseFloat(rec.current_price) : null;
         const price = priceVal !== null ? priceVal.toFixed(2) : "";
         const pct = rec.percent_change !== undefined && rec.percent_change !== null ? (rec.percent_change * 100).toFixed(2) + "%" : "";
-        const reportTime = rec.report_time ? new Date(rec.report_time).toLocaleString() : "";
+        const reportTime = formatDateTime(rec.report_time);
+        const score = rec.score !== undefined && rec.score !== null ? Number(rec.score).toFixed(0) : "";
+        const confidence = rec.confidence !== undefined && rec.confidence !== null ? `${Math.round(Number(rec.confidence) * 100)}%` : "";
+        const breakdown = rec.score_breakdown
+          ? Object.entries(rec.score_breakdown)
+              .map(([key, value]) => `${key}: ${value ?? ""}`)
+              .join(" | ")
+          : "";
+        const evidence = Array.isArray(rec.evidence)
+          ? rec.evidence.map((item) => `${item.signal}: ${formatEvidenceValue(item.value)}`).join("; ")
+          : "";
+        const risks = Array.isArray(rec.risks) && rec.risks.length
+          ? rec.risks.map((item) => item.signal).join(", ")
+          : "None";
         tr.innerHTML = `
           <td class="px-2 py-1 border-b"><a href="${tickerLink}" target="_blank" class="text-blue-400 underline">${rec.ticker}</a></td>
           <td class="px-2 py-1 border-b">${rec.rating}</td>
+          <td class="px-2 py-1 border-b">${score}</td>
+          <td class="px-2 py-1 border-b">${confidence}</td>
           <td class="px-2 py-1 border-b">${price}</td>
           <td class="px-2 py-1 border-b">${pct}</td>
           <td class="px-2 py-1 border-b">${reportTime}</td>
-          <td class="px-2 py-1 border-b">${rec.reason || ""}</td>
-          <td class="px-2 py-1 border-b"><button class="trade-btn bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded">Trade</button></td>`;
+          <td class="px-2 py-1 border-b">
+            <div>${rec.reason || ""}</div>
+            <details class="mt-2 text-xs text-gray-300">
+              <summary class="cursor-pointer text-blue-300">Evidence</summary>
+              <div class="mt-1">Score: ${breakdown || "Unavailable"}</div>
+              <div class="mt-1">Evidence: ${evidence || "Unavailable"}</div>
+              <div class="mt-1">Risks: ${risks}</div>
+            </details>
+          </td>
+          <td class="px-2 py-1 border-b whitespace-nowrap">
+            <button class="trade-btn bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded">Trade</button>
+            <button class="history-btn bg-gray-700 hover:bg-gray-600 text-white px-2 py-1 rounded ml-1">History</button>
+          </td>`;
         // attach event to trade button
         tr.querySelector(".trade-btn").addEventListener("click", (e) => {
           e.stopPropagation();
           openTradeModal(rec);
+        });
+        tr.querySelector(".history-btn").addEventListener("click", (e) => {
+          e.stopPropagation();
+          openHistoryModal(rec.ticker);
         });
         tbody.appendChild(tr);
       });
@@ -247,6 +301,17 @@ async function displayReport(analysisId) {
   } catch (e) {
     console.error("Error displaying report", e);
   }
+}
+
+function formatEvidenceValue(value) {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "number") return value.toFixed(4);
+  if (typeof value === "object") {
+    return Object.entries(value)
+      .map(([key, nestedValue]) => `${key}=${typeof nestedValue === "number" ? nestedValue.toFixed(4) : nestedValue}`)
+      .join(", ");
+  }
+  return String(value);
 }
 
 async function newAnalysis() {
@@ -318,6 +383,10 @@ const tradeTitle = document.getElementById("trade-title");
 const tradeBody = document.getElementById("trade-body");
 const tradeConfirm = document.getElementById("trade-confirm");
 const tradeCancel = document.getElementById("trade-cancel");
+const historyModal = document.getElementById("history-modal");
+const historyTitle = document.getElementById("history-title");
+const historyBody = document.getElementById("history-body");
+const historyClose = document.getElementById("history-close");
 let currentTrade = null;
 
 function openTradeModal(rec) {
@@ -372,6 +441,53 @@ tradeConfirm.addEventListener("click", () => {
   tradeModal.classList.add("hidden");
   currentTrade = null;
 });
+
+historyClose.addEventListener("click", () => {
+  historyModal.classList.add("hidden");
+  historyBody.innerHTML = "";
+});
+
+async function openHistoryModal(ticker) {
+  historyTitle.textContent = `Recommendation History - ${ticker}`;
+  historyBody.innerHTML = `<p class="text-gray-400">Loading...</p>`;
+  historyModal.classList.remove("hidden");
+  try {
+    const res = await fetch(`${API_BASE}/history/${ticker}`);
+    const history = await res.json();
+    if (!history.length) {
+      historyBody.innerHTML = `<p class="text-gray-400">No recommendation history yet.</p>`;
+      return;
+    }
+    const table = document.createElement("table");
+    table.className = "min-w-full text-left text-sm";
+    table.innerHTML = `<thead><tr>
+      <th class="px-2 py-1 border-b">Date</th>
+      <th class="px-2 py-1 border-b">Rating</th>
+      <th class="px-2 py-1 border-b">Price</th>
+      <th class="px-2 py-1 border-b">% Change</th>
+      <th class="px-2 py-1 border-b">Reason</th>
+    </tr></thead>`;
+    const tbody = document.createElement("tbody");
+    history.forEach((entry) => {
+      const tr = document.createElement("tr");
+      const date = formatDateTime(entry.report_time || entry.created_at);
+      const price = entry.current_price !== null && entry.current_price !== undefined ? Number(entry.current_price).toFixed(2) : "";
+      const pct = entry.percent_change !== null && entry.percent_change !== undefined ? `${(Number(entry.percent_change) * 100).toFixed(2)}%` : "";
+      tr.innerHTML = `
+        <td class="px-2 py-1 border-b">${date}</td>
+        <td class="px-2 py-1 border-b">${entry.rating}</td>
+        <td class="px-2 py-1 border-b">${price}</td>
+        <td class="px-2 py-1 border-b">${pct}</td>
+        <td class="px-2 py-1 border-b">${entry.reason || ""}</td>`;
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    historyBody.innerHTML = "";
+    historyBody.appendChild(table);
+  } catch (e) {
+    historyBody.innerHTML = `<p class="text-red-300">Unable to load history.</p>`;
+  }
+}
 
 // Delete an analysis by ID
 async function deleteAnalysis(id) {

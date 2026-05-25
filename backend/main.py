@@ -19,6 +19,7 @@ import io
 import json
 import logging
 import sys
+from datetime import datetime
 from typing import Dict, List
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, BackgroundTasks, Depends
@@ -26,6 +27,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from .models.analysis import Analysis, LogEntry, AnalysisStatus
+from .models.recommendation_history import RecommendationHistory
 from .models.base import Base, engine, get_session
 from .agents.crew import InvestmentRecommendationCrew
 from fastapi.staticfiles import StaticFiles
@@ -90,19 +92,34 @@ class AnalysisCreateRequest(BaseModel):
     tickers: List[str] | None = None
 
 
+def _parse_crew_json(result_str: str) -> dict:
+    """Parse CrewAI JSON output, including JSON wrapped in Markdown fences."""
+    text = result_str.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].strip().startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    return json.loads(text)
+
+
 @app.post("/analyses", status_code=201)
 async def create_analysis(request: AnalysisCreateRequest, background_tasks: BackgroundTasks):
     """Kick off a new analysis for the supplied tickers."""
     # Determine which tickers to use.  If the request body omits them or
     # provides an empty list, fall back to default candidates for
     # monitoring mode.
-    from .services.candidates import get_default_candidate_tickers
+    from .services.candidates import discover_candidate_tickers
 
     tickers_list: List[str]
     if not request.tickers:
-        tickers_list = get_default_candidate_tickers()
+        tickers_list = discover_candidate_tickers()
     else:
-        tickers_list = request.tickers
+        tickers_list = [ticker.strip().upper() for ticker in request.tickers if ticker.strip()]
+        if not tickers_list:
+            tickers_list = discover_candidate_tickers()
     tickers_str = ",".join(tickers_list)
     # Create analysis record
     with get_session() as db:
@@ -169,6 +186,32 @@ async def get_logs(analysis_id: str):
         ]
 
 
+@app.get("/history/{ticker}")
+async def get_recommendation_history(ticker: str):
+    """Return chronological recommendation history for a ticker."""
+    normalized = ticker.strip().upper()
+    with get_session() as db:
+        entries = (
+            db.query(RecommendationHistory)
+            .filter_by(ticker=normalized)
+            .order_by(RecommendationHistory.created_at.desc())
+            .all()
+        )
+        return [
+            {
+                "analysis_id": entry.analysis_id,
+                "ticker": entry.ticker,
+                "rating": entry.rating,
+                "current_price": entry.current_price,
+                "percent_change": entry.percent_change,
+                "report_time": entry.report_time.isoformat() if entry.report_time else None,
+                "reason": entry.reason,
+                "created_at": entry.created_at.isoformat(),
+            }
+            for entry in entries
+        ]
+
+
 @app.websocket("/ws/{analysis_id}")
 async def websocket_endpoint(websocket: WebSocket, analysis_id: str):
     """WebSocket endpoint for streaming live logs to the client."""
@@ -214,7 +257,7 @@ async def run_analysis(analysis_id: str, tickers_str: str) -> None:
                 # Attempt to parse JSON output.  If parsing fails, store
                 # the raw string as the summary.
                 try:
-                    parsed = json.loads(result_str)
+                    parsed = _parse_crew_json(result_str)
                     # Before saving, enrich each recommendation with price
                     # information (current price and percent change) and a
                     # timestamp.  This provides additional context in the
@@ -222,42 +265,77 @@ async def run_analysis(analysis_id: str, tickers_str: str) -> None:
                     # services.price_info.  Wrap in a try/except to avoid
                     # blocking if the price lookup fails.
                     from .services.price_info import get_stock_price_info
-                    from datetime import datetime
+                    from .services.scoring import calculate_signal_scores
                     recs = parsed.get('recommendations', [])
+                    if not isinstance(recs, list):
+                        recs = []
+                        parsed['recommendations'] = recs
+                    requested_tickers = [t.strip().upper() for t in tickers_str.split(',') if t.strip()]
+                    signal_scores = calculate_signal_scores(requested_tickers)
                     # Build a set of tickers we've already got recommendations for
                     existing_rec_tickers = set()
                     for rec in recs:
                         ticker = rec.get('ticker')
                         if ticker:
-                            existing_rec_tickers.add(ticker.upper())
-                            info = get_stock_price_info(ticker)
+                            normalized_ticker = ticker.upper()
+                            rec['ticker'] = normalized_ticker
+                            existing_rec_tickers.add(normalized_ticker)
+                            info = get_stock_price_info(normalized_ticker)
                             if info:
                                 rec['current_price'] = info.get('current_price')
                                 rec['percent_change'] = info.get('percent_change')
                             # attach a report timestamp in ISO format
                             rec['report_time'] = datetime.utcnow().isoformat()
+                            score = signal_scores.get(normalized_ticker)
+                            if score:
+                                rec['score'] = score.get('final_score')
+                                rec['confidence'] = score.get('confidence')
+                                rec['score_breakdown'] = {
+                                    'capex': score.get('capex_score'),
+                                    'pricing': score.get('pricing_score'),
+                                    'rotation': score.get('rotation_score'),
+                                    'fundamental_risk': score.get('fundamental_risk_score'),
+                                    'technical_risk': score.get('technical_risk_score'),
+                                    'distribution_risk': score.get('distribution_risk_score'),
+                                }
+                                rec['evidence'] = score.get('evidence', [])
+                                rec['risks'] = score.get('risks', [])
+                                rec['model_rating'] = rec.get('rating')
+                                if not rec.get('rating'):
+                                    rec['rating'] = score.get('suggested_rating')
                     # Ensure every requested ticker is represented.  Split the
                     # tickers_str by commas, normalise to uppercase and add
                     # neutral entries for any ticker that was not mentioned in
                     # the LLM's recommendations list.  This guarantees the
                     # frontend and users see explicit feedback even when no
                     # strong signals are present.
-                    requested_tickers = [t.strip().upper() for t in tickers_str.split(',') if t.strip()]
                     for req in requested_tickers:
                         if req and req not in existing_rec_tickers:
                             # Look up price info
                             info = get_stock_price_info(req)
+                            score = signal_scores.get(req, {})
                             neutral_entry = {
                                 'ticker': req,
-                                'rating': 'neutral',
+                                'rating': score.get('suggested_rating', 'neutral'),
                                 'reason': 'No strong capex growth, price spike or sector rotation signals were observed for this stock.',
                             }
                             if info:
                                 neutral_entry['current_price'] = info.get('current_price')
                                 neutral_entry['percent_change'] = info.get('percent_change')
-                            # attach a report timestamp
-                            from datetime import datetime as _datetime
-                            neutral_entry['report_time'] = _datetime.utcnow().isoformat()
+                            neutral_entry['report_time'] = datetime.utcnow().isoformat()
+                            if score:
+                                neutral_entry['score'] = score.get('final_score')
+                                neutral_entry['confidence'] = score.get('confidence')
+                                neutral_entry['score_breakdown'] = {
+                                    'capex': score.get('capex_score'),
+                                    'pricing': score.get('pricing_score'),
+                                    'rotation': score.get('rotation_score'),
+                                    'fundamental_risk': score.get('fundamental_risk_score'),
+                                    'technical_risk': score.get('technical_risk_score'),
+                                    'distribution_risk': score.get('distribution_risk_score'),
+                                }
+                                neutral_entry['evidence'] = score.get('evidence', [])
+                                neutral_entry['risks'] = score.get('risks', [])
                             recs.append(neutral_entry)
                     # Persist the updated JSON object as a string so the
                     # frontend can access summary, reasons and price info.
@@ -268,9 +346,43 @@ async def run_analysis(analysis_id: str, tickers_str: str) -> None:
                     # rating only; the detailed reasons will be parsed
                     # client‑side from the summary.
                     if recs:
+                        for rec in recs:
+                            ticker = (rec.get('ticker') or '').upper()
+                            rating = (rec.get('rating') or 'neutral').lower()
+                            if ticker and rating in {'hold', 'sell'}:
+                                prior_buy = (
+                                    db.query(RecommendationHistory)
+                                    .filter_by(ticker=ticker, rating='buy')
+                                    .first()
+                                )
+                                if not prior_buy:
+                                    rec['risk_rating'] = rating
+                                    rec['rating'] = 'neutral'
+                                    rec['reason'] = (
+                                        f"{rec.get('reason', '')} No prior buy recommendation is recorded, "
+                                        "so the exit signal is tracked as risk evidence rather than an active exit."
+                                    ).strip()
                         analysis.recommendation = ", ".join(
                             f"{r.get('ticker')}: {r.get('rating')}" for r in recs
                         )
+                        for rec in recs:
+                            report_time = None
+                            if rec.get('report_time'):
+                                try:
+                                    report_time = datetime.fromisoformat(rec.get('report_time'))
+                                except Exception:
+                                    report_time = None
+                            db.add(
+                                RecommendationHistory(
+                                    analysis_id=analysis_id,
+                                    ticker=(rec.get('ticker') or '').upper(),
+                                    rating=rec.get('rating') or 'neutral',
+                                    current_price=rec.get('current_price'),
+                                    percent_change=rec.get('percent_change'),
+                                    report_time=report_time,
+                                    reason=rec.get('reason'),
+                                )
+                            )
                     else:
                         analysis.recommendation = None
                 except Exception:
@@ -308,6 +420,7 @@ async def delete_analysis_endpoint(analysis_id: str):
     with get_session() as db:
         # Delete logs first to maintain referential integrity
         db.query(LogEntry).filter_by(analysis_id=analysis_id).delete()
+        db.query(RecommendationHistory).filter_by(analysis_id=analysis_id).delete()
         # Delete the analysis record
         deleted = db.query(Analysis).filter_by(id=analysis_id).delete()
         db.flush()
