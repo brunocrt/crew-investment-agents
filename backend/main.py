@@ -376,10 +376,13 @@ async def run_analysis(analysis_id: str, tickers_str: str) -> None:
                                     'capex': score.get('capex_score'),
                                     'pricing': score.get('pricing_score'),
                                     'rotation': score.get('rotation_score'),
+                                    'valuation': score.get('valuation_score'),
+                                    'quality': score.get('quality_score'),
                                     'fundamental_risk': score.get('fundamental_risk_score'),
                                     'technical_risk': score.get('technical_risk_score'),
                                     'distribution_risk': score.get('distribution_risk_score'),
                                 }
+                                rec['valuation'] = score.get('valuation')
                                 rec['evidence'] = score.get('evidence', [])
                                 rec['risks'] = score.get('risks', [])
                                 rec['model_rating'] = rec.get('rating')
@@ -416,10 +419,13 @@ async def run_analysis(analysis_id: str, tickers_str: str) -> None:
                                     'capex': score.get('capex_score'),
                                     'pricing': score.get('pricing_score'),
                                     'rotation': score.get('rotation_score'),
+                                    'valuation': score.get('valuation_score'),
+                                    'quality': score.get('quality_score'),
                                     'fundamental_risk': score.get('fundamental_risk_score'),
                                     'technical_risk': score.get('technical_risk_score'),
                                     'distribution_risk': score.get('distribution_risk_score'),
                                 }
+                                neutral_entry['valuation'] = score.get('valuation')
                                 neutral_entry['evidence'] = score.get('evidence', [])
                                 neutral_entry['risks'] = score.get('risks', [])
                             recs.append(neutral_entry)

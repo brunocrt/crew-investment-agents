@@ -18,6 +18,7 @@ from .capex import get_capex_growth
 from .pricing import get_price_spikes
 from .rotation import DEFAULT_SECTOR_ETFS, get_sector_rotation_analysis
 from .sell import get_sell_signals
+from .valuation import get_valuation_profile
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +122,40 @@ def calculate_signal_scores(tickers: Iterable[str]) -> Dict[str, Dict[str, Any]]
                 )
             )
 
+        valuation = get_valuation_profile(ticker)
+        valuation_score = float(valuation.get("valuation_score") or 0.0)
+        quality_score = float(valuation.get("quality_score") or 0.0)
+        if valuation.get("has_valuation"):
+            evidence.append(
+                _evidence(
+                    "fundamental_valuation",
+                    {
+                        "label": valuation.get("label"),
+                        "current_pe": valuation.get("current_pe"),
+                        "forward_pe": valuation.get("forward_pe"),
+                        "normal_pe": valuation.get("normal_pe"),
+                        "target_multiple": valuation.get("target_multiple"),
+                        "fair_value": valuation.get("fair_value"),
+                        "margin_of_safety": valuation.get("margin_of_safety"),
+                    },
+                    0.25,
+                    "Current price compared with earnings power, historical normal valuation and growth-based fair value.",
+                )
+            )
+            evidence.append(
+                _evidence(
+                    "business_quality",
+                    {
+                        "quality_score": valuation.get("quality_score"),
+                        "expected_growth": valuation.get("expected_growth"),
+                        "profit_margin": valuation.get("profit_margin"),
+                        "debt_to_equity": valuation.get("debt_to_equity"),
+                    },
+                    0.15,
+                    "Growth, profitability and balance-sheet quality used to avoid cheap but deteriorating businesses.",
+                )
+            )
+
         sell = sell_by_ticker.get(ticker, {})
         fundamental_risk = 1.0 if sell.get("fundamental_signal") else 0.0
         technical_risk = 1.0 if sell.get("technical_signal") else 0.0
@@ -134,14 +169,22 @@ def calculate_signal_scores(tickers: Iterable[str]) -> Dict[str, Dict[str, Any]]
             if sell.get(key):
                 risks.append({"signal": label, "value": True, "detail": "Exit red flag detected by the sell signal service."})
 
-        raw_score = capex_score * 0.35 + pricing_score * 0.20 + rotation_score * 0.25 - risk_score * 0.35
+        raw_score = (
+            capex_score * 0.25
+            + pricing_score * 0.15
+            + rotation_score * 0.20
+            + valuation_score * 0.25
+            + quality_score * 0.15
+            - risk_score * 0.35
+        )
         final_score = round(max(0.0, min(raw_score, 1.0)) * 100, 2)
-        observed_components = sum(1 for value in [capex_growth, price_spikes, rotation, sell] if value not in (None, [], {}))
+        observed_components = sum(1 for value in [capex_growth, price_spikes, rotation, valuation.get("has_valuation"), sell] if value not in (None, [], {}, False))
         confidence = round(min(1.0, 0.25 + observed_components * 0.18), 2)
 
+        valuation_allows_buy = not valuation.get("has_valuation") or valuation_score >= 0.35
         if risk_score >= 1.0:
             suggested_rating = "sell"
-        elif final_score >= 70:
+        elif final_score >= 70 and valuation_allows_buy:
             suggested_rating = "buy"
         elif final_score >= 45:
             suggested_rating = "hold"
@@ -153,6 +196,8 @@ def calculate_signal_scores(tickers: Iterable[str]) -> Dict[str, Dict[str, Any]]
             "capex_score": round(capex_score, 3),
             "pricing_score": round(pricing_score, 3),
             "rotation_score": round(rotation_score, 3),
+            "valuation_score": round(valuation_score, 3),
+            "quality_score": round(quality_score, 3),
             "technical_risk_score": technical_risk,
             "fundamental_risk_score": fundamental_risk,
             "distribution_risk_score": distribution_risk,
@@ -160,6 +205,7 @@ def calculate_signal_scores(tickers: Iterable[str]) -> Dict[str, Dict[str, Any]]
             "final_score": final_score,
             "confidence": confidence,
             "suggested_rating": suggested_rating,
+            "valuation": valuation,
             "evidence": evidence,
             "risks": risks,
         }

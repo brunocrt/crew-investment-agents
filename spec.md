@@ -36,6 +36,8 @@ candidates.py returns and persists the monitoring universe. It seeds core candid
 
 scoring.py calculates deterministic recommendation scores for each ticker, including capex, pricing, rotation, risk components, final opportunity score, confidence, structured evidence and risk flags.
 
+valuation.py estimates FastGraphs-inspired fundamental valuation context from public market data. It compares current price with trailing and forward earnings, historical normal P/E, growth-based fair multiple, estimated fair value, margin of safety, earnings yield, growth, profitability and debt to produce valuation and business-quality scores.
+
 Agents And Tasks
 
 Agents are defined in YAML and wired through CrewAI:
@@ -70,7 +72,7 @@ WebSocket /ws/{id} streams live log lines for a running analysis.
 
 Analysis Flow
 
-The backend creates an Analysis row with running status, executes the CrewAI workflow asynchronously, streams stdout line by line into LogEntry records and WebSocket clients, parses the crew JSON output, enriches recommendations with price info, deterministic scoring, confidence, evidence and risks, adds missing neutral entries, applies the prior-buy guard for hold/sell ratings, stores the JSON summary, updates the aggregate recommendation string and writes RecommendationHistory rows. In monitor mode, the backend first refreshes the candidate universe so the agents evaluate both core and discovered tickers.
+The backend creates an Analysis row with running status, executes the CrewAI workflow asynchronously, streams stdout line by line into LogEntry records and WebSocket clients, parses the crew JSON output, enriches recommendations with price info, deterministic scoring, valuation context, confidence, evidence and risks, adds missing neutral entries, applies the prior-buy guard for hold/sell ratings, stores the JSON summary, updates the aggregate recommendation string and writes RecommendationHistory rows. In monitor mode, the backend first refreshes the candidate universe so the agents evaluate both core and discovered tickers.
 
 Frontend
 
@@ -88,7 +90,7 @@ Recent Analyses list with status badges, selected-state styling, local timestamp
 
 Agent Logs panel that shows immediate local feedback and streams live WebSocket log output when an analysis is selected.
 
-Analysis Report panel with parsed summary and grouped candidate evaluations. Rows are grouped into Buy Candidates, Exit Risk, Caution and Watchlist / Neutral, then ordered by deterministic opportunity score, rating priority, confidence and ticker. Exit Risk is reserved for active hold/sell signals with prior buy history; Caution is used for warning flags on monitored candidates that are not current exit actions. Collapsed rows show ticker, rating, brief rationale, opportunity score, current price and 30-day change. Expanding a row reveals full rationale, report time, model/risk rating, structured evidence, risk flags and action buttons. Trade planning is enabled only for buy candidates.
+Analysis Report panel with parsed summary and grouped candidate evaluations. Rows are grouped into Buy Candidates, Exit Risk, Caution and Watchlist / Neutral, then ordered by deterministic opportunity score, rating priority, confidence and ticker. Exit Risk is reserved for active hold/sell signals with prior buy history; Caution is used for warning flags on monitored candidates that are not current exit actions. Collapsed rows show ticker, rating, brief rationale, opportunity score, valuation score, current price and 30-day change. Expanding a row reveals full rationale, valuation context, report time, model/risk rating, structured evidence, risk flags and action buttons. Trade planning is enabled only for buy candidates.
 
 Trade modal with editable share quantity, stop-loss, target price and dividend yield. It calculates estimated cost, projected gain and dividend estimate, then updates the simulated portfolio on confirmation. No real orders are executed.
 

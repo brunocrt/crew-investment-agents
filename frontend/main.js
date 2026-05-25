@@ -103,6 +103,18 @@ function percent(value) {
   return `${(Number(value) * 100).toFixed(2)}%`;
 }
 
+function compactPercent(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "N/A";
+  return `${(number * 100).toFixed(1)}%`;
+}
+
+function multiple(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "N/A";
+  return `${number.toFixed(1)}x`;
+}
+
 function priceChangeLabel(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) return "N/A";
@@ -606,6 +618,13 @@ function renderRecommendationCard(rec, index) {
   const reportTime = formatDateTime(rec.report_time) || "N/A";
   const evidence = Array.isArray(rec.evidence) ? rec.evidence : [];
   const risks = Array.isArray(rec.risks) ? rec.risks : [];
+  const valuation = rec.valuation && typeof rec.valuation === "object" ? rec.valuation : null;
+  const valuationLabel = valuation?.label || "N/A";
+  const valuationScore = valuation && Number.isFinite(Number(valuation.valuation_score)) ? Number(valuation.valuation_score) * 100 : null;
+  const valuationDisplay = valuationScore !== null ? `${valuationScore.toFixed(0)}` : "N/A";
+  const opportunityStyles = signalStylesForScore(Number(rec.score), { good: 70, weak: 45 }, "Opportunity");
+  const confidenceStyles = signalStylesForScore(Number(rec.confidence), { good: 0.75, weak: 0.45 }, "Confidence");
+  const riskStyles = risks.length || rec.risk_rating ? signalToneStyles("bad", "Risk present", "octagon-alert") : signalToneStyles("good", "No major risk", "shield-check");
   const isBuy = String(rec.rating || "").toLowerCase() === "buy";
 
   return `
@@ -622,10 +641,14 @@ function renderRecommendationCard(rec, index) {
               <p class="mt-1 truncate text-xs text-slate-500">${escapeHtml(shortReason(rec.reason))}</p>
             </div>
           </div>
-          <div class="grid grid-cols-3 gap-2 text-right text-xs sm:min-w-72">
+          <div class="grid grid-cols-4 gap-2 text-right text-xs sm:min-w-96">
             <div>
               <span class="block text-slate-500">Opportunity</span>
               <span class="font-semibold text-white">${escapeHtml(score)}</span>
+            </div>
+            <div>
+              <span class="block text-slate-500">Value</span>
+              <span class="font-semibold text-white" title="${escapeHtml(valuationLabel)}">${escapeHtml(valuationDisplay)}</span>
             </div>
             <div>
               <span class="block text-slate-500">Price</span>
@@ -642,19 +665,15 @@ function renderRecommendationCard(rec, index) {
         </summary>
         <div class="border-t border-slate-800 p-4">
           <p class="text-sm leading-6 text-slate-300">${escapeHtml(rec.reason || "No reason provided.")}</p>
-          <div class="mt-4 grid grid-cols-2 gap-2 text-xs text-slate-400 sm:grid-cols-4">
-            <div class="rounded-md bg-slate-950/50 p-2"><span class="block text-slate-500">Confidence</span>${escapeHtml(confidence)}</div>
-            <div class="rounded-md bg-slate-950/50 p-2"><span class="block text-slate-500">Report</span>${escapeHtml(reportTime)}</div>
-            <div class="rounded-md bg-slate-950/50 p-2"><span class="block text-slate-500">Model</span>${escapeHtml(rec.model_rating || rec.rating || "N/A")}</div>
-            <div class="rounded-md bg-slate-950/50 p-2"><span class="block text-slate-500">Risk</span>${escapeHtml(rec.risk_rating || "None")}</div>
+          <div class="mt-4 grid grid-cols-2 gap-2 text-xs text-slate-300 sm:grid-cols-5">
+            <div class="rounded-md border p-2 ${opportunityStyles.card}"><span class="block text-slate-500">Opportunity</span>${escapeHtml(score)}</div>
+            <div class="rounded-md border p-2 ${confidenceStyles.card}"><span class="block text-slate-500">Confidence</span>${escapeHtml(confidence)}</div>
+            <div class="rounded-md border p-2 ${valuationCardClass(valuation)}"><span class="block text-slate-500">Valuation</span>${escapeHtml(valuationLabel)}</div>
+            <div class="rounded-md border p-2 ${riskStyles.card}"><span class="block text-slate-500">Risk</span>${escapeHtml(rec.risk_rating || (risks.length ? "Present" : "None"))}</div>
+            <div class="rounded-md border border-slate-800 bg-slate-950/50 p-2"><span class="block text-slate-500">Report</span>${escapeHtml(reportTime)}</div>
           </div>
-          <div class="mt-4 rounded-md border border-slate-800 bg-slate-950/40 p-3 text-xs text-slate-300">
-            <div class="font-semibold text-cyan-200">Evidence and risk</div>
-            <div class="mt-3 space-y-2">
-          ${evidence.length ? evidence.map(renderEvidence).join("") : `<p class="text-slate-500">No structured evidence available.</p>`}
-              <div class="pt-2 text-slate-400">Risks: ${risks.length ? risks.map((risk) => escapeHtml(risk.signal)).join(", ") : "None"}</div>
-            </div>
-          </div>
+          ${renderValuationPanel(valuation)}
+          ${renderEvidenceAndRisk(evidence, risks)}
           <div class="mt-4 flex flex-wrap gap-2">
             <button data-index="${index}" ${isBuy ? "" : "disabled"} class="trade-btn inline-flex items-center gap-2 rounded-md px-3 py-2 text-xs font-semibold ${isBuy ? "bg-cyan-500 text-slate-950 hover:bg-cyan-400" : "cursor-not-allowed bg-slate-800 text-slate-500"}">
               ${icon("briefcase-business", "h-4 w-4")}
@@ -671,19 +690,286 @@ function renderRecommendationCard(rec, index) {
   `;
 }
 
+function signalToneStyles(tone, label, iconName) {
+  const base = {
+    good: {
+      label,
+      icon: iconName || "circle-check",
+      panel: "border-emerald-400/30 bg-emerald-950/20",
+      card: "border-emerald-400/20 bg-emerald-950/25",
+      badge: "border-emerald-400/30 bg-emerald-400/10 text-emerald-200",
+    },
+    bad: {
+      label,
+      icon: iconName || "octagon-alert",
+      panel: "border-red-400/30 bg-red-950/20",
+      card: "border-red-400/20 bg-red-950/25",
+      badge: "border-red-400/30 bg-red-400/10 text-red-200",
+    },
+    weak: {
+      label,
+      icon: iconName || "triangle-alert",
+      panel: "border-amber-400/30 bg-amber-950/20",
+      card: "border-amber-400/20 bg-amber-950/25",
+      badge: "border-amber-400/30 bg-amber-400/10 text-amber-200",
+    },
+    neutral: {
+      label,
+      icon: iconName || "circle-minus",
+      panel: "border-slate-500/30 bg-white/5",
+      card: "border-slate-500/25 bg-white/5",
+      badge: "border-slate-400/30 bg-white/10 text-slate-100",
+    },
+  };
+  return base[tone] || base.neutral;
+}
+
+function signalStylesForScore(value, thresholds, label) {
+  if (!Number.isFinite(value)) return signalToneStyles("neutral", `${label} unavailable`);
+  if (value >= thresholds.good) return signalToneStyles("good", `Strong ${label.toLowerCase()}`);
+  if (value >= thresholds.weak) return signalToneStyles("weak", `Weak ${label.toLowerCase()}`);
+  return signalToneStyles("bad", `Low ${label.toLowerCase()}`);
+}
+
+function valuationCardClass(valuation) {
+  if (!valuation) return signalToneStyles("neutral", "Valuation unavailable").card;
+  return valuationSignalStyles(valuationSignal(valuation)).card;
+}
+
+function renderValuationPanel(valuation) {
+  if (!valuation) return "";
+  const margin = valuation.margin_of_safety !== null && valuation.margin_of_safety !== undefined
+    ? compactPercent(valuation.margin_of_safety)
+    : "N/A";
+  const quality = Number.isFinite(Number(valuation.quality_score)) ? `${(Number(valuation.quality_score) * 100).toFixed(0)}` : "N/A";
+  const interpretation = interpretValuation(valuation);
+  const signal = valuationSignal(valuation);
+  const signalStyles = valuationSignalStyles(signal);
+  return `
+    <div class="mt-4 rounded-md border ${signalStyles.panel} p-3 text-xs text-slate-300">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <div class="font-semibold text-cyan-200">Valuation context</div>
+        <div class="inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-xs font-semibold ${signalStyles.badge}">
+          ${icon(signalStyles.icon, "h-3.5 w-3.5")}
+          <span>${escapeHtml(signalStyles.label)}</span>
+        </div>
+      </div>
+      <div class="mt-3 grid gap-2 sm:grid-cols-3">
+        <div class="rounded-md border p-3 ${signalStyles.card}">
+          <span class="block text-slate-500">Interpretation</span>
+          <p class="mt-1 leading-5 text-slate-200">${escapeHtml(interpretation.summary)}</p>
+        </div>
+        <div class="rounded-md border p-3 ${signalStyles.card}">
+          <span class="block text-slate-500">Opportunity Read</span>
+          <p class="mt-1 leading-5 text-slate-200">${escapeHtml(interpretation.opportunity)}</p>
+        </div>
+        <div class="rounded-md border p-3 ${signalStyles.card}">
+          <span class="block text-slate-500">Caution</span>
+          <p class="mt-1 leading-5 text-slate-200">${escapeHtml(interpretation.caution)}</p>
+        </div>
+      </div>
+      <div class="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <div class="rounded-md bg-slate-900/80 p-2"><span class="block text-slate-500">P/E</span>${escapeHtml(multiple(valuation.current_pe))}</div>
+        <div class="rounded-md bg-slate-900/80 p-2"><span class="block text-slate-500">Normal P/E</span>${escapeHtml(multiple(valuation.normal_pe))}</div>
+        <div class="rounded-md bg-slate-900/80 p-2"><span class="block text-slate-500">Fair Value</span>${escapeHtml(money(valuation.fair_value) || "N/A")}</div>
+        <div class="rounded-md bg-slate-900/80 p-2"><span class="block text-slate-500">Upside</span>${escapeHtml(margin)}</div>
+        <div class="rounded-md bg-slate-900/80 p-2"><span class="block text-slate-500">Forward P/E</span>${escapeHtml(multiple(valuation.forward_pe))}</div>
+        <div class="rounded-md bg-slate-900/80 p-2"><span class="block text-slate-500">Target Multiple</span>${escapeHtml(multiple(valuation.target_multiple))}</div>
+        <div class="rounded-md bg-slate-900/80 p-2"><span class="block text-slate-500">Growth</span>${escapeHtml(compactPercent(valuation.expected_growth ?? valuation.revenue_growth))}</div>
+        <div class="rounded-md bg-slate-900/80 p-2"><span class="block text-slate-500">Quality</span>${escapeHtml(quality)}</div>
+      </div>
+    </div>
+  `;
+}
+
+function valuationSignal(valuation) {
+  if (!valuation.has_valuation) return "neutral";
+  const label = String(valuation.label || "").toLowerCase();
+  const score = Number(valuation.valuation_score);
+  const margin = Number(valuation.margin_of_safety);
+  if (label.includes("undervalued") || (Number.isFinite(score) && score >= 0.7) || (Number.isFinite(margin) && margin >= 0.2)) {
+    return "good";
+  }
+  if (label.includes("expensive") || (Number.isFinite(score) && score < 0.25) || (Number.isFinite(margin) && margin < -0.1)) {
+    return "bad";
+  }
+  if (label.includes("fairly") || (Number.isFinite(score) && score < 0.45)) {
+    return "weak";
+  }
+  return "neutral";
+}
+
+function valuationSignalStyles(signal) {
+  const labels = {
+    good: "Good valuation signal",
+    bad: "Bad valuation signal",
+    weak: "Weak valuation signal",
+    neutral: "Neutral valuation signal",
+  };
+  const icons = {
+    good: "circle-check",
+    bad: "octagon-alert",
+    weak: "triangle-alert",
+    neutral: "circle-minus",
+  };
+  return signalToneStyles(signal, labels[signal] || labels.neutral, icons[signal] || icons.neutral);
+}
+
+function interpretValuation(valuation) {
+  const label = String(valuation.label || "").toLowerCase();
+  const margin = Number(valuation.margin_of_safety);
+  const valuationScore = Number(valuation.valuation_score);
+  const qualityScore = Number(valuation.quality_score);
+  const hasMargin = Number.isFinite(margin);
+  const hasQuality = Number.isFinite(qualityScore);
+  const qualityText = hasQuality && qualityScore >= 0.75
+    ? "business quality looks strong"
+    : hasQuality && qualityScore >= 0.45
+      ? "business quality looks acceptable"
+      : hasQuality
+        ? "business quality looks weak"
+        : "business quality is not available";
+
+  if (!valuation.has_valuation) {
+    return {
+      summary: "There is not enough earnings data to anchor price to fundamentals.",
+      opportunity: "Treat this as a signal-driven watchlist item, not a valuation-backed idea.",
+      caution: "Use price, sector, and risk signals until earnings data is available.",
+    };
+  }
+
+  if (label.includes("undervalued")) {
+    return {
+      summary: `Price is below the estimated fair-value anchor and ${qualityText}.`,
+      opportunity: hasMargin
+        ? `The model sees about ${compactPercent(margin)} upside to fair value before considering new growth surprises.`
+        : "The model sees valuation support, but upside could not be estimated.",
+      caution: "Confirm that earnings estimates are realistic; fair value falls if growth disappoints.",
+    };
+  }
+
+  if (label.includes("reasonable")) {
+    return {
+      summary: `Valuation is supportive but not deeply discounted, and ${qualityText}.`,
+      opportunity: hasMargin
+        ? `There is about ${compactPercent(margin)} estimated upside to fair value.`
+        : "The stock is not obviously expensive on the available fundamentals.",
+      caution: "Prefer this when other signals are strong; valuation alone is not the whole case.",
+    };
+  }
+
+  if (label.includes("fairly")) {
+    return {
+      summary: `Price is close to the model's fair-value range, and ${qualityText}.`,
+      opportunity: "This can still be attractive if capex, sector rotation, or pricing-power signals improve.",
+      caution: "There is limited valuation cushion, so execution and earnings quality matter more.",
+    };
+  }
+
+  const scoreText = Number.isFinite(valuationScore) ? `valuation score is ${(valuationScore * 100).toFixed(0)}` : "valuation score is low";
+  return {
+    summary: `Price looks stretched versus the fundamental anchor; ${scoreText}, while ${qualityText}.`,
+    opportunity: "A good company can still be a poor entry if the current price already discounts too much growth.",
+    caution: hasMargin
+      ? `The model estimates ${compactPercent(margin)} margin of safety, so wait for a better price or stronger evidence.`
+      : "Wait for either a better price or clearer earnings support.",
+  };
+}
+
 function shortReason(reason) {
   const text = String(reason || "Expand to view rationale and evidence.");
   return text.length > 120 ? `${text.slice(0, 117)}...` : text;
 }
 
-function renderEvidence(item) {
+function renderEvidenceAndRisk(evidence, risks) {
+  const riskStyles = risks.length ? signalToneStyles("bad", "Risk present", "octagon-alert") : signalToneStyles("good", "No major risk", "shield-check");
+  const riskText = risks.length ? risks.map(renderRiskLabel).join(", ") : "None detected";
   return `
-    <div class="rounded-md bg-slate-900/80 p-2">
-      <div class="font-semibold text-slate-200">${escapeHtml(item.signal)}</div>
+    <div class="mt-4 rounded-md border ${riskStyles.panel} p-3 text-xs text-slate-300">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <div class="font-semibold text-cyan-200">Evidence and risk</div>
+        <div class="inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-xs font-semibold ${riskStyles.badge}">
+          ${icon(riskStyles.icon, "h-3.5 w-3.5")}
+          <span>${escapeHtml(riskStyles.label)}</span>
+        </div>
+      </div>
+      <div class="mt-3 space-y-2">
+        ${evidence.length ? evidence.map(renderEvidence).join("") : `<p class="rounded-md border border-slate-500/25 bg-white/5 p-2 text-slate-500">No structured evidence available.</p>`}
+        <div class="rounded-md border p-2 ${riskStyles.card}">
+          <div class="font-semibold text-slate-200">Risks</div>
+          <div class="mt-1 text-slate-400">${riskText}</div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderRiskLabel(risk) {
+  const label = formatEvidenceSignal(risk.signal);
+  const description = riskDescription(risk.signal, risk.detail);
+  return `<span class="cursor-help underline decoration-slate-500/60 decoration-dotted underline-offset-2" title="${escapeHtml(description)}">${escapeHtml(label)}</span>`;
+}
+
+function riskDescription(signal, fallback) {
+  const normalized = String(signal || "").toLowerCase();
+  const descriptions = {
+    distribution_days: "Recent down days happened on elevated volume, which can indicate institutional selling pressure.",
+    distribution: "Recent down days happened on elevated volume, which can indicate institutional selling pressure.",
+    technical_exhaustion: "Price behavior looks stretched or weakening, suggesting the trend may be losing momentum.",
+    fundamental_peak: "Fundamental momentum may be peaking, so future growth could slow or disappoint.",
+    sell_signal: "A sell-oriented risk signal was detected by the exit-risk model.",
+  };
+  return descriptions[normalized] || fallback || "Risk flag detected by the sell-signal model.";
+}
+
+function renderEvidence(item) {
+  const styles = evidenceStyles(item);
+  return `
+    <div class="rounded-md border p-2 ${styles.card}">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <div class="font-semibold text-slate-200">${escapeHtml(formatEvidenceSignal(item.signal))}</div>
+        <span class="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold ${styles.badge}">
+          ${icon(styles.icon, "h-3 w-3")}
+          ${escapeHtml(styles.label)}
+        </span>
+      </div>
       <div class="mt-1 text-slate-400">${escapeHtml(formatEvidenceValue(item.value))}</div>
       <div class="mt-1 text-slate-500">${escapeHtml(item.detail || "")}</div>
     </div>
   `;
+}
+
+function formatEvidenceSignal(signal) {
+  return String(signal || "")
+    .split("_")
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
+function evidenceStyles(item) {
+  const signal = String(item.signal || "").toLowerCase();
+  const value = item.value;
+  if (signal.includes("risk") || signal.includes("sell") || signal.includes("exhaustion") || signal.includes("distribution")) {
+    return signalToneStyles("bad", "Risk", "octagon-alert");
+  }
+  if (signal.includes("valuation")) {
+    const label = String(value?.label || "").toLowerCase();
+    if (label.includes("undervalued") || Number(value?.margin_of_safety) >= 0.2) return signalToneStyles("good", "Supportive", "circle-check");
+    if (label.includes("expensive") || Number(value?.margin_of_safety) < -0.1) return signalToneStyles("bad", "Concerning", "octagon-alert");
+    if (label.includes("fairly")) return signalToneStyles("weak", "Mixed", "triangle-alert");
+    return signalToneStyles("neutral", "Neutral", "circle-minus");
+  }
+  if (signal.includes("quality")) {
+    const quality = Number(value?.quality_score);
+    if (Number.isFinite(quality) && quality >= 0.75) return signalToneStyles("good", "Strong", "circle-check");
+    if (Number.isFinite(quality) && quality >= 0.45) return signalToneStyles("weak", "Acceptable", "triangle-alert");
+    if (Number.isFinite(quality)) return signalToneStyles("bad", "Weak", "octagon-alert");
+    return signalToneStyles("neutral", "Neutral", "circle-minus");
+  }
+  if (signal.includes("capex") || signal.includes("pricing") || signal.includes("rotation")) {
+    return signalToneStyles("good", "Positive", "circle-check");
+  }
+  return signalToneStyles("neutral", "Context", "circle-minus");
 }
 
 function formatEvidenceValue(value) {
