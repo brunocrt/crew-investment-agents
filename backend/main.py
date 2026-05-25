@@ -20,7 +20,7 @@ import json
 import logging
 import sys
 from datetime import datetime
-from typing import Dict, List
+from typing import Awaitable, Callable, Dict, List
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -80,6 +80,54 @@ class ConnectionManager:
                 await websocket.close()
 
 manager = ConnectionManager()
+
+
+async def persist_and_broadcast_log(analysis_id: str, message: str) -> None:
+    """Persist one log line and send it to connected WebSocket clients."""
+    if not message:
+        return
+    with get_session() as db:
+        db.add(LogEntry(analysis_id=analysis_id, message=message))
+    await manager.broadcast(analysis_id, message)
+
+
+class LiveLogStream(io.StringIO):
+    """Line-buffered stdout replacement for real-time analysis logs."""
+
+    def __init__(
+        self,
+        analysis_id: str,
+        emit: Callable[[str, str], Awaitable[None]],
+        loop: asyncio.AbstractEventLoop,
+    ) -> None:
+        super().__init__()
+        self.analysis_id = analysis_id
+        self.emit = emit
+        self.loop = loop
+        self._line_buffer = ""
+        self.pending_tasks: List[asyncio.Future] = []
+
+    def write(self, value: str) -> int:
+        super().write(value)
+        self._line_buffer += value
+        while "\n" in self._line_buffer:
+            line, self._line_buffer = self._line_buffer.split("\n", 1)
+            self._schedule(line.rstrip("\r"))
+        return len(value)
+
+    def flush_remaining(self) -> None:
+        if self._line_buffer.strip():
+            self._schedule(self._line_buffer.strip())
+        self._line_buffer = ""
+
+    def _schedule(self, message: str) -> None:
+        if not message:
+            return
+        try:
+            task = self.loop.create_task(self.emit(self.analysis_id, message))
+        except RuntimeError:
+            return
+        self.pending_tasks.append(task)
 
 
 class AnalysisCreateRequest(BaseModel):
@@ -194,7 +242,7 @@ async def get_recommendation_history(ticker: str):
         entries = (
             db.query(RecommendationHistory)
             .filter_by(ticker=normalized)
-            .order_by(RecommendationHistory.created_at.desc())
+            .order_by(RecommendationHistory.created_at.asc())
             .all()
         )
         return [
@@ -234,9 +282,10 @@ async def run_analysis(analysis_id: str, tickers_str: str) -> None:
     """
     # Prepare crew and inputs
     crew = InvestmentRecommendationCrew().crew()
-    # Capture stdout
+    # Capture and stream stdout line-by-line.
     original_stdout = sys.stdout
-    log_buffer = io.StringIO()
+    loop = asyncio.get_running_loop()
+    log_buffer = LiveLogStream(analysis_id, persist_and_broadcast_log, loop)
     sys.stdout = log_buffer
     try:
         result = await crew.kickoff_async(inputs={"tickers": tickers_str})
@@ -400,18 +449,9 @@ async def run_analysis(analysis_id: str, tickers_str: str) -> None:
     finally:
         # Restore stdout
         sys.stdout = original_stdout
-        # Retrieve logs from buffer
-        log_buffer.seek(0)
-        lines = log_buffer.readlines()
-        with get_session() as db:
-            for line in lines:
-                msg = line.rstrip('\n')
-                if not msg:
-                    continue
-                log_entry = LogEntry(analysis_id=analysis_id, message=msg)
-                db.add(log_entry)
-                # Broadcast to WebSocket subscribers
-                asyncio.create_task(manager.broadcast(analysis_id, msg))
+        log_buffer.flush_remaining()
+        if log_buffer.pending_tasks:
+            await asyncio.gather(*log_buffer.pending_tasks, return_exceptions=True)
         log_buffer.close()
 
 # Delete an analysis and its logs

@@ -58,8 +58,8 @@
     <div id="toast-stack" class="fixed right-4 top-4 z-50 w-[calc(100%-2rem)] max-w-sm space-y-2"></div>
 
     <div class="mx-auto flex min-h-screen w-full max-w-[1500px] flex-col lg:flex-row">
-      <aside class="border-b border-slate-800/80 bg-slate-950/70 px-5 py-4 lg:sticky lg:top-0 lg:h-screen lg:w-72 lg:border-b-0 lg:border-r lg:px-6 lg:py-6">
-        <div class="flex items-center justify-between lg:block">
+      <aside class="border-b border-slate-800/80 bg-slate-950/70 px-5 py-4 lg:sticky lg:top-0 lg:h-screen lg:w-[390px] lg:overflow-y-auto lg:border-b-0 lg:border-r lg:px-5 lg:py-6 scrollbar-thin">
+        <div class="flex items-center justify-between">
           <div>
             <p class="text-xs font-semibold uppercase tracking-[0.18em] text-cyan-300">Crew AI</p>
             <h1 class="mt-1 text-xl font-semibold text-white">Investment Console</h1>
@@ -67,7 +67,7 @@
           <div id="api-status" class="rounded-full border border-slate-700 px-3 py-1 text-xs text-slate-300">Checking</div>
         </div>
 
-        <nav class="mt-5 flex gap-2 overflow-x-auto pb-1 lg:mt-8 lg:block lg:space-y-2 lg:overflow-visible lg:pb-0">
+        <nav class="mt-5 flex gap-2 overflow-x-auto pb-1 lg:block lg:space-y-2 lg:overflow-visible lg:pb-0">
           <button class="flex min-w-fit items-center gap-2 rounded-md bg-slate-800 px-3 py-2 text-sm font-medium text-white lg:w-full">
             <i data-lucide="layout-dashboard" class="h-4 w-4"></i>
             Dashboard
@@ -78,13 +78,46 @@
           </a>
         </nav>
 
-        <div class="mt-6 hidden rounded-md border border-slate-800 bg-slate-900/70 p-4 text-sm text-slate-300 lg:block">
+        <div class="mt-5 rounded-md border border-slate-800 bg-slate-900/70 p-4 text-sm text-slate-300">
           <div class="flex items-center gap-2 text-slate-100">
             <i data-lucide="activity" class="h-4 w-4 text-emerald-300"></i>
             Live Run State
           </div>
           <p id="sidebar-status" class="mt-3 text-xs leading-5 text-slate-400">No analysis selected.</p>
         </div>
+
+        <section id="portfolio-section" class="panel mt-4 rounded-lg p-4">
+          <div class="flex items-center justify-between">
+            <h3 class="text-base font-semibold text-white">Portfolio</h3>
+            <button id="save-portfolio" class="inline-flex items-center gap-2 rounded-md bg-slate-700 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-600">
+              <i data-lucide="save" class="h-4 w-4"></i>
+              Save
+            </button>
+          </div>
+          <div class="mt-4 grid grid-cols-1 gap-3">
+            <label class="block">
+              <span class="text-xs text-slate-400">Available Balance</span>
+              <input id="available-balance" type="number" step="0.01" class="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-white outline-none focus:border-cyan-400" />
+            </label>
+            <label class="block">
+              <span class="text-xs text-slate-400">Invested Amount</span>
+              <input id="invested-amount" type="number" step="0.01" class="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-slate-300 outline-none" readonly />
+            </label>
+          </div>
+        </section>
+
+        <section class="panel mt-4 rounded-lg">
+          <div class="flex items-center justify-between border-b border-slate-800 px-4 py-3">
+            <div>
+              <h3 class="text-base font-semibold text-white">Recent Analyses</h3>
+              <p class="text-xs text-slate-500">Select a run to inspect.</p>
+            </div>
+            <button id="refresh-btn" class="inline-flex h-9 w-9 items-center justify-center rounded-md border border-slate-700 text-slate-300 hover:bg-slate-800" title="Refresh">
+              <i data-lucide="refresh-cw" class="h-4 w-4"></i>
+            </button>
+          </div>
+          <div id="analyses-list" class="max-h-[48vh] space-y-3 overflow-y-auto p-4 scrollbar-thin lg:max-h-none"></div>
+        </section>
       </aside>
 
       <main class="flex-1 px-4 py-5 sm:px-6 lg:px-8 lg:py-7">
@@ -110,44 +143,10 @@
 
         <div id="action-status" class="mt-5 hidden rounded-md border border-cyan-400/30 bg-cyan-400/10 px-4 py-3 text-sm text-cyan-100"></div>
 
-        <section class="mt-5 grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
-          <div class="grid grid-cols-1 gap-4 self-start sm:grid-cols-3" id="stats-container"></div>
-
-          <section id="portfolio-section" class="panel rounded-lg p-4">
-            <div class="flex items-center justify-between">
-              <h3 class="text-base font-semibold text-white">Portfolio</h3>
-              <button id="save-portfolio" class="inline-flex items-center gap-2 rounded-md bg-slate-700 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-600">
-                <i data-lucide="save" class="h-4 w-4"></i>
-                Save
-              </button>
-            </div>
-            <div class="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-1">
-              <label class="block">
-                <span class="text-xs text-slate-400">Available Balance</span>
-                <input id="available-balance" type="number" step="0.01" class="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-white outline-none focus:border-cyan-400" />
-              </label>
-              <label class="block">
-                <span class="text-xs text-slate-400">Invested Amount</span>
-                <input id="invested-amount" type="number" step="0.01" class="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-slate-300 outline-none" readonly />
-              </label>
-            </div>
-          </section>
+        <section class="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-3" id="stats-container">
         </section>
 
-        <section class="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-[420px_minmax(0,1fr)]">
-          <section class="panel rounded-lg">
-            <div class="flex items-center justify-between border-b border-slate-800 px-4 py-3">
-              <div>
-                <h3 class="text-base font-semibold text-white">Recent Analyses</h3>
-                <p class="text-xs text-slate-500">Newest runs appear first.</p>
-              </div>
-              <button id="refresh-btn" class="inline-flex h-9 w-9 items-center justify-center rounded-md border border-slate-700 text-slate-300 hover:bg-slate-800" title="Refresh">
-                <i data-lucide="refresh-cw" class="h-4 w-4"></i>
-              </button>
-            </div>
-            <div id="analyses-list" class="max-h-[580px] space-y-3 overflow-y-auto p-4 scrollbar-thin"></div>
-          </section>
-
+        <section class="mt-4">
           <div class="space-y-4">
             <section class="panel rounded-lg">
               <div class="flex flex-col gap-2 border-b border-slate-800 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">

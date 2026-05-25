@@ -626,24 +626,79 @@ function openTradeModal(rec) {
   const price = Number(rec.current_price || 0);
   const maxSpend = Number(portfolioState.available || 0) * 0.05;
   const shares = price > 0 ? Math.floor(maxSpend / price) : 0;
-  const spend = shares * price;
   const stopPrice = price ? price * 0.9 : 0;
   const targetPrice = price ? price * 1.2 : 0;
-  const projectedGain = price && shares ? (targetPrice - price) * shares : 0;
   els.tradeTitle.textContent = `Trade ${String(rec.rating || "").toUpperCase()} - ${rec.ticker}`;
   els.tradeBody.innerHTML = `
-    <div class="grid grid-cols-2 gap-2">
-      <div class="rounded-md bg-slate-950/60 p-3"><span class="block text-xs text-slate-500">Current Price</span>${money(price)}</div>
-      <div class="rounded-md bg-slate-950/60 p-3"><span class="block text-xs text-slate-500">Shares</span>${shares}</div>
-      <div class="rounded-md bg-slate-950/60 p-3"><span class="block text-xs text-slate-500">Estimated Cost</span>${money(spend)}</div>
-      <div class="rounded-md bg-slate-950/60 p-3"><span class="block text-xs text-slate-500">Projected Gain</span>${money(projectedGain)}</div>
-      <div class="rounded-md bg-slate-950/60 p-3"><span class="block text-xs text-slate-500">Stop Loss</span>${money(stopPrice)}</div>
-      <div class="rounded-md bg-slate-950/60 p-3"><span class="block text-xs text-slate-500">Target</span>${money(targetPrice)}</div>
+    <div class="rounded-md bg-slate-950/60 p-3 text-sm">
+      <span class="block text-xs text-slate-500">Current Price</span>
+      <span class="font-semibold text-white">${money(price)}</span>
+    </div>
+    <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+      <label class="block">
+        <span class="text-xs text-slate-500">Shares</span>
+        <input id="trade-shares" min="0" step="1" type="number" value="${shares}" class="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-white outline-none focus:border-cyan-400" />
+      </label>
+      <label class="block">
+        <span class="text-xs text-slate-500">Stop Loss</span>
+        <input id="trade-stop" min="0" step="0.01" type="number" value="${stopPrice.toFixed(2)}" class="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-white outline-none focus:border-cyan-400" />
+      </label>
+      <label class="block">
+        <span class="text-xs text-slate-500">Target Price</span>
+        <input id="trade-target" min="0" step="0.01" type="number" value="${targetPrice.toFixed(2)}" class="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-white outline-none focus:border-cyan-400" />
+      </label>
+      <label class="block">
+        <span class="text-xs text-slate-500">Dividend Yield %</span>
+        <input id="trade-dividend" min="0" step="0.01" type="number" value="0.00" class="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-white outline-none focus:border-cyan-400" />
+      </label>
+    </div>
+    <div class="grid grid-cols-1 gap-2 text-sm sm:grid-cols-3">
+      <div class="rounded-md bg-slate-950/60 p-3"><span class="block text-xs text-slate-500">Estimated Cost</span><span id="trade-cost" class="font-semibold text-white"></span></div>
+      <div class="rounded-md bg-slate-950/60 p-3"><span class="block text-xs text-slate-500">Projected Gain</span><span id="trade-gain" class="font-semibold text-white"></span></div>
+      <div class="rounded-md bg-slate-950/60 p-3"><span class="block text-xs text-slate-500">Dividend Est.</span><span id="trade-dividend-estimate" class="font-semibold text-white"></span></div>
     </div>
     <p class="mt-3 leading-6">${escapeHtml(rec.reason || "No specific reason provided.")}</p>
   `;
-  currentTrade = { ticker: rec.ticker, shares, cost: spend };
+  currentTrade = { ticker: rec.ticker, price };
+  wireTradeCalculator();
   openModal(els.tradeModal);
+}
+
+function wireTradeCalculator() {
+  const sharesInput = document.getElementById("trade-shares");
+  const stopInput = document.getElementById("trade-stop");
+  const targetInput = document.getElementById("trade-target");
+  const dividendInput = document.getElementById("trade-dividend");
+  const costEl = document.getElementById("trade-cost");
+  const gainEl = document.getElementById("trade-gain");
+  const dividendEl = document.getElementById("trade-dividend-estimate");
+
+  const calculate = () => {
+    const shares = Math.max(0, Math.floor(Number(sharesInput.value || 0)));
+    const target = Math.max(0, Number(targetInput.value || 0));
+    const dividendYield = Math.max(0, Number(dividendInput.value || 0)) / 100;
+    const cost = shares * currentTrade.price;
+    const projectedGain = Math.max(0, target - currentTrade.price) * shares;
+    const dividendEstimate = cost * dividendYield;
+    costEl.textContent = money(cost);
+    gainEl.textContent = money(projectedGain);
+    dividendEl.textContent = money(dividendEstimate);
+    currentTrade = {
+      ...currentTrade,
+      shares,
+      cost,
+      stopPrice: Math.max(0, Number(stopInput.value || 0)),
+      targetPrice: target,
+      dividendYield,
+      projectedGain,
+      dividendEstimate,
+    };
+  };
+
+  [sharesInput, stopInput, targetInput, dividendInput].forEach((input) => {
+    input.addEventListener("input", calculate);
+  });
+  calculate();
 }
 
 function openModal(modal) {
