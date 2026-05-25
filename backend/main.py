@@ -239,7 +239,7 @@ async def run_analysis(analysis_id: str, tickers_str: str) -> None:
     log_buffer = io.StringIO()
     sys.stdout = log_buffer
     try:
-        result = crew.kickoff(inputs={"tickers": tickers_str})
+        result = await crew.kickoff_async(inputs={"tickers": tickers_str})
         # The result returned by CrewAI may be a raw string or a CrewOutput
         # object with a ``raw`` attribute.  Convert it to a string so it
         # can be persisted in the database and parsed as JSON.  If it's
@@ -337,14 +337,6 @@ async def run_analysis(analysis_id: str, tickers_str: str) -> None:
                                 neutral_entry['evidence'] = score.get('evidence', [])
                                 neutral_entry['risks'] = score.get('risks', [])
                             recs.append(neutral_entry)
-                    # Persist the updated JSON object as a string so the
-                    # frontend can access summary, reasons and price info.
-                    updated_result_str = json.dumps(parsed)
-                    analysis.summary = updated_result_str
-                    # Create a simple aggregated recommendation string for
-                    # quick display in the analyses list.  Include the
-                    # rating only; the detailed reasons will be parsed
-                    # client‑side from the summary.
                     if recs:
                         for rec in recs:
                             ticker = (rec.get('ticker') or '').upper()
@@ -362,6 +354,14 @@ async def run_analysis(analysis_id: str, tickers_str: str) -> None:
                                         f"{rec.get('reason', '')} No prior buy recommendation is recorded, "
                                         "so the exit signal is tracked as risk evidence rather than an active exit."
                                     ).strip()
+                        # Persist the updated JSON object as a string so the
+                        # frontend can access summary, reasons and price info.
+                        updated_result_str = json.dumps(parsed)
+                        analysis.summary = updated_result_str
+                        # Create a simple aggregated recommendation string for
+                        # quick display in the analyses list.  Include the
+                        # rating only; the detailed reasons will be parsed
+                        # client-side from the summary.
                         analysis.recommendation = ", ".join(
                             f"{r.get('ticker')}: {r.get('rating')}" for r in recs
                         )
@@ -384,6 +384,7 @@ async def run_analysis(analysis_id: str, tickers_str: str) -> None:
                                 )
                             )
                     else:
+                        analysis.summary = json.dumps(parsed)
                         analysis.recommendation = None
                 except Exception:
                     analysis.summary = result_str
