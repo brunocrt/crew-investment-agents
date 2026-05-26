@@ -81,6 +81,7 @@ const els = {
   recommendations: document.getElementById("recommendations"),
   refreshBtn: document.getElementById("refresh-btn"),
   refreshCandidates: document.getElementById("refresh-candidates"),
+  refreshSessions: document.getElementById("refresh-sessions"),
   refreshUsers: document.getElementById("refresh-users"),
   reloadAgentConfig: document.getElementById("reload-agent-config"),
   reportCollapseBtn: document.getElementById("report-collapse-btn"),
@@ -101,6 +102,8 @@ const els = {
   settingRiskLabel: document.getElementById("setting-risk-label"),
   settingRiskSummary: document.getElementById("setting-risk-summary"),
   settingRiskTolerance: document.getElementById("setting-risk-tolerance"),
+  sessionsCount: document.getElementById("sessions-count"),
+  sessionsList: document.getElementById("sessions-list"),
   settingStopLoss: document.getElementById("setting-stop-loss"),
   settingTargetGain: document.getElementById("setting-target-gain"),
   settingsNavBtn: document.getElementById("settings-nav-btn"),
@@ -174,7 +177,9 @@ function storeSession(token, user) {
   sessionStorage.setItem("investment-console-user", JSON.stringify(user || null));
   currentUser = user || null;
   portfolioState = loadPortfolio();
+  analysisSettings = loadAnalysisSettings();
   updateLoggedUserUI();
+  updateAnalysisSettingsUI();
   updatePortfolioUI(portfolioState);
 }
 
@@ -384,7 +389,10 @@ function setActiveView(view) {
   }
   if (isUsers) {
     updateAccountForm();
-    if (currentUser?.role === "admin") loadUsers();
+    if (currentUser?.role === "admin") {
+      loadUsers();
+      loadSessions();
+    }
   }
   updateViewNav();
 }
@@ -420,6 +428,20 @@ function loadPanelCollapseState() {
   }
 }
 
+function analysisSettingsStorageKey(user = currentUser) {
+  const userKey = user?.id ?? user?.username;
+  return userKey ? `investment-console-analysis-settings:${userKey}` : null;
+}
+
+function migrateLegacyAnalysisSettings(user = currentUser) {
+  const key = analysisSettingsStorageKey(user);
+  if (!key || localStorage.getItem(key)) return;
+  const legacy = localStorage.getItem("analysis-settings");
+  if (!legacy) return;
+  localStorage.setItem(key, legacy);
+  localStorage.removeItem("analysis-settings");
+}
+
 function loadAnalysisSettings() {
   const defaults = {
     positionSizePct: 5,
@@ -432,7 +454,9 @@ function loadAnalysisSettings() {
     candidateRefreshCadence: "monitor",
   };
   try {
-    const stored = { ...defaults, ...JSON.parse(localStorage.getItem("analysis-settings") || "{}") };
+    const key = analysisSettingsStorageKey();
+    migrateLegacyAnalysisSettings();
+    const stored = { ...defaults, ...JSON.parse((key && localStorage.getItem(key)) || "{}") };
     if (!Number.isFinite(Number(stored.riskToleranceDial))) {
       stored.riskToleranceDial = dialFromRiskTolerance(stored.riskTolerance);
     }
@@ -454,7 +478,8 @@ function saveAnalysisSettings() {
     riskToleranceDial: riskDial,
     candidateRefreshCadence: els.settingCandidateRefresh?.value || "monitor",
   };
-  localStorage.setItem("analysis-settings", JSON.stringify(analysisSettings));
+  const key = analysisSettingsStorageKey();
+  if (key) localStorage.setItem(key, JSON.stringify(analysisSettings));
   updateAnalysisSettingsUI();
   showToast("Analysis settings saved.", "success");
 }
@@ -1144,6 +1169,12 @@ async function fetchUsers() {
   return res.json();
 }
 
+async function fetchSessions() {
+  const res = await apiFetch("/auth/sessions");
+  if (!res.ok) throw new Error("Unable to fetch sessions");
+  return res.json();
+}
+
 async function loadUsers() {
   if (!els.usersList || currentUser?.role !== "admin") return;
   els.usersList.innerHTML = `<p class="text-sm text-slate-500">Loading users...</p>`;
@@ -1162,21 +1193,40 @@ function renderUsers(users) {
     return;
   }
   els.usersList.innerHTML = users
-    .map((user) => `
+    .map((user) => {
+      const isSelf = String(user.id) === String(currentUser?.id);
+      return `
       <article class="rounded-md border border-slate-800 bg-slate-950/50 p-3">
         <div class="flex flex-wrap items-center justify-between gap-3">
           <div>
             <div class="font-semibold text-white">${escapeHtml(user.display_name || user.username)}</div>
             <div class="mt-1 text-xs text-slate-500">${escapeHtml(user.username)}</div>
           </div>
-          <div class="flex flex-wrap items-center gap-2 text-xs">
+          <div class="flex flex-wrap items-center justify-end gap-2 text-xs">
             <span class="rounded-full border border-cyan-400/20 bg-cyan-400/10 px-2.5 py-1 font-semibold text-cyan-200">${escapeHtml(user.role)}</span>
             <span class="text-slate-500">${user.is_active ? "Active" : "Inactive"}</span>
+            <button data-user-id="${escapeHtml(user.id)}" data-username="${escapeHtml(user.username)}" class="user-reset-password inline-flex items-center gap-1 rounded-md border border-slate-700 px-2.5 py-1 font-semibold text-slate-200 hover:bg-slate-800" title="Change password">
+              ${icon("key-round", "h-3.5 w-3.5")}
+              Password
+            </button>
+            <button data-user-id="${escapeHtml(user.id)}" data-username="${escapeHtml(user.username)}" class="user-delete inline-flex items-center gap-1 rounded-md border border-red-400/30 px-2.5 py-1 font-semibold text-red-200 hover:bg-red-950/40 ${isSelf ? "hidden" : ""}" title="Delete user">
+              ${icon("trash-2", "h-3.5 w-3.5")}
+              Delete
+            </button>
           </div>
         </div>
       </article>
-    `)
+    `;
+    })
     .join("");
+
+  els.usersList.querySelectorAll(".user-reset-password").forEach((button) => {
+    button.addEventListener("click", () => resetUserPassword(button.dataset.userId, button.dataset.username));
+  });
+  els.usersList.querySelectorAll(".user-delete").forEach((button) => {
+    button.addEventListener("click", () => deleteUser(button.dataset.userId, button.dataset.username));
+  });
+  refreshIcons();
 }
 
 async function createUser(event) {
@@ -1202,8 +1252,149 @@ async function createUser(event) {
     if (els.newUserRole) els.newUserRole.value = "user";
     showToast("User created.", "success");
     await loadUsers();
+    await loadSessions();
   } catch (e) {
     showToast(e.message || "Could not create user.", "error");
+  }
+}
+
+async function loadSessions() {
+  if (!els.sessionsList || currentUser?.role !== "admin") return;
+  els.sessionsList.innerHTML = `<p class="text-sm text-slate-500">Loading sessions...</p>`;
+  try {
+    const payload = await fetchSessions();
+    renderSessions(payload);
+  } catch (e) {
+    els.sessionsList.innerHTML = `<p class="text-sm text-red-300">Unable to load active sessions.</p>`;
+    if (els.sessionsCount) els.sessionsCount.textContent = "Unable to load sessions.";
+  }
+}
+
+function renderSessions(payload) {
+  if (!els.sessionsList) return;
+  const sessions = payload?.sessions || [];
+  const activeUsers = payload?.active_users ?? new Set(sessions.map((session) => session.user_id).filter(Boolean)).size;
+  if (els.sessionsCount) {
+    els.sessionsCount.textContent = `${activeUsers} logged-in user${activeUsers === 1 ? "" : "s"} across ${sessions.length} active session${sessions.length === 1 ? "" : "s"}.`;
+  }
+  if (!sessions.length) {
+    els.sessionsList.innerHTML = `<p class="text-sm text-slate-500">No active sessions.</p>`;
+    return;
+  }
+  els.sessionsList.innerHTML = sessions
+    .map((session) => {
+      const expires = session.expires_at ? formatDateTime(session.expires_at) : "Unknown expiry";
+      return `
+        <article class="rounded-md border border-slate-800 bg-slate-950/50 p-3">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div class="min-w-0">
+              <div class="flex flex-wrap items-center gap-2">
+                <span class="font-semibold text-white">${escapeHtml(session.display_name || session.username)}</span>
+                ${session.is_current ? `<span class="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2 py-0.5 text-xs font-semibold text-emerald-200">Current</span>` : ""}
+              </div>
+              <div class="mt-1 text-xs text-slate-500">${escapeHtml(session.username)} &middot; ${escapeHtml(session.role)} &middot; Expires ${escapeHtml(expires)}</div>
+            </div>
+            <div class="flex flex-wrap items-center gap-2 text-xs">
+              <button data-session-id="${escapeHtml(session.session_id)}" class="session-revoke inline-flex items-center gap-1 rounded-md border border-slate-700 px-2.5 py-1 font-semibold text-slate-200 hover:bg-slate-800" title="Log out this session">
+                ${icon("log-out", "h-3.5 w-3.5")}
+                Session
+              </button>
+              <button data-user-id="${escapeHtml(session.user_id)}" data-username="${escapeHtml(session.username)}" class="session-revoke-user inline-flex items-center gap-1 rounded-md border border-amber-400/30 px-2.5 py-1 font-semibold text-amber-200 hover:bg-amber-950/40" title="Log out all sessions for this user">
+                ${icon("user-x", "h-3.5 w-3.5")}
+                User
+              </button>
+            </div>
+          </div>
+        </article>
+      `;
+    })
+    .join("");
+
+  els.sessionsList.querySelectorAll(".session-revoke").forEach((button) => {
+    button.addEventListener("click", () => revokeSession(button.dataset.sessionId));
+  });
+  els.sessionsList.querySelectorAll(".session-revoke-user").forEach((button) => {
+    button.addEventListener("click", () => revokeUserSessions(button.dataset.userId, button.dataset.username));
+  });
+  refreshIcons();
+}
+
+async function resetUserPassword(userId, username) {
+  const password = prompt(`Enter a new password for ${username}:`);
+  if (!password) return;
+  if (password.length < 6) {
+    showToast("Password must be at least 6 characters.", "error");
+    return;
+  }
+  try {
+    const res = await apiFetch(`/users/${encodeURIComponent(userId)}/password`, {
+      method: "PATCH",
+      body: JSON.stringify({ password }),
+    });
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({}));
+      throw new Error(error.detail || "Password update failed");
+    }
+    const payload = await res.json();
+    showToast(`Password updated. Revoked ${payload.revoked_sessions || 0} active session(s).`, "success");
+    if (payload.revoked_current) {
+      await logout(false);
+      return;
+    }
+    await loadSessions();
+  } catch (e) {
+    showToast(e.message || "Could not update password.", "error");
+  }
+}
+
+async function deleteUser(userId, username) {
+  if (!confirm(`Delete ${username}? This also removes that user's private analyses and recommendation history.`)) return;
+  try {
+    const res = await apiFetch(`/users/${encodeURIComponent(userId)}`, { method: "DELETE" });
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({}));
+      throw new Error(error.detail || "Delete user failed");
+    }
+    const payload = await res.json();
+    showToast(`User deleted. Removed ${payload.deleted_analyses || 0} analysis record(s).`, "success");
+    await loadUsers();
+    await loadSessions();
+  } catch (e) {
+    showToast(e.message || "Could not delete user.", "error");
+  }
+}
+
+async function revokeSession(sessionId) {
+  if (!sessionId) return;
+  try {
+    const res = await apiFetch(`/auth/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
+    if (!res.ok) throw new Error("Session revoke failed");
+    const payload = await res.json();
+    showToast("Session logged out.", "success");
+    if (payload.revoked_current) {
+      await logout(false);
+      return;
+    }
+    await loadSessions();
+  } catch (e) {
+    showToast("Could not log out that session.", "error");
+  }
+}
+
+async function revokeUserSessions(userId, username) {
+  if (!userId || !confirm(`Log out all active sessions for ${username}?`)) return;
+  try {
+    const res = await apiFetch(`/auth/sessions/user/${encodeURIComponent(userId)}`, { method: "DELETE" });
+    if (!res.ok) throw new Error("User logout failed");
+    const payload = await res.json();
+    showToast(`Logged out ${payload.revoked || 0} session(s).`, "success");
+    if (payload.revoked_current) {
+      await logout(false);
+      return;
+    }
+    await loadSessions();
+  } catch (e) {
+    showToast("Could not log out that user.", "error");
   }
 }
 
@@ -2793,6 +2984,7 @@ function wireEvents() {
   els.reloadAgentConfig?.addEventListener("click", () => loadAgentConfig());
   els.saveAgentConfig?.addEventListener("click", saveAgentConfig);
   els.refreshUsers?.addEventListener("click", loadUsers);
+  els.refreshSessions?.addEventListener("click", loadSessions);
   els.userCreateForm?.addEventListener("submit", createUser);
   els.accountForm?.addEventListener("submit", saveAccount);
   els.settingRiskDial?.addEventListener("input", () => applyRiskToleranceDial(els.settingRiskDial.value));

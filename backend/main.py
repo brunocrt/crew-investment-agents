@@ -238,6 +238,10 @@ class UserCreateRequest(BaseModel):
     role: str = "user"
 
 
+class UserPasswordUpdateRequest(BaseModel):
+    password: str
+
+
 class UserProfileUpdateRequest(BaseModel):
     display_name: str | None = None
     current_password: str | None = None
@@ -430,6 +434,38 @@ def _user_from_token(token: str | None) -> Dict[str, str]:
     return session["user"]
 
 
+def _prune_expired_sessions() -> None:
+    now = time.time()
+    for token, session in list(ACTIVE_TOKENS.items()):
+        if float(session.get("expires_at", 0)) <= now:
+            ACTIVE_TOKENS.pop(token, None)
+
+
+def _session_payload(token: str, session: Dict[str, Any], current: str | None = None) -> Dict[str, Any]:
+    user = session.get("user", {})
+    expires_at = float(session.get("expires_at", 0))
+    return {
+        "session_id": session.get("session_id"),
+        "user_id": user.get("id"),
+        "username": user.get("username"),
+        "display_name": user.get("display_name") or user.get("username"),
+        "role": user.get("role"),
+        "expires_at": datetime.utcfromtimestamp(expires_at).isoformat() if expires_at else None,
+        "is_current": bool(current and token == current),
+    }
+
+
+def _revoke_sessions_for_user(user_id: int, current: str | None = None) -> tuple[int, bool]:
+    revoked = 0
+    revoked_current = False
+    for token, session in list(ACTIVE_TOKENS.items()):
+        if str(session.get("user", {}).get("id")) == str(user_id):
+            ACTIVE_TOKENS.pop(token, None)
+            revoked += 1
+            revoked_current = revoked_current or bool(current and token == current)
+    return revoked, revoked_current
+
+
 def require_user(authorization: str | None = Header(default=None)) -> Dict[str, str]:
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="Authentication required")
@@ -450,16 +486,13 @@ def require_admin(user: Dict[str, str] = Depends(require_user)) -> Dict[str, str
 
 
 def _analysis_query_for_user(db, user: Dict[str, str]):
-    query = db.query(Analysis)
-    if user.get("role") != "admin":
-        query = query.filter(Analysis.user_id == int(user["id"]))
-    return query
+    return db.query(Analysis).filter(Analysis.user_id == int(user["id"]))
 
 
 def _can_access_analysis(analysis: Analysis | None, user: Dict[str, str]) -> bool:
     if not analysis:
         return False
-    return user.get("role") == "admin" or analysis.user_id == int(user["id"])
+    return analysis.user_id == int(user["id"])
 
 
 @app.post("/auth/login")
@@ -473,8 +506,9 @@ async def login(request: LoginRequest, http_request: Request):
         user_payload = _user_payload(user)
     _clear_login_attempts(http_request)
     token = secrets.token_urlsafe(32)
+    session_id = secrets.token_urlsafe(12)
     expires_at = time.time() + TOKEN_TTL_SECONDS
-    ACTIVE_TOKENS[token] = {"user": user_payload, "expires_at": expires_at}
+    ACTIVE_TOKENS[token] = {"session_id": session_id, "user": user_payload, "expires_at": expires_at}
     return {"token": token, "user": user_payload, "expires_at": datetime.utcfromtimestamp(expires_at).isoformat()}
 
 
@@ -489,6 +523,41 @@ async def logout(token: str = Depends(current_token)):
 async def auth_me(user: Dict[str, str] = Depends(require_user)):
     """Return the authenticated user profile."""
     return {"user": user}
+
+
+@app.get("/auth/sessions")
+async def list_sessions(user: Dict[str, str] = Depends(require_admin), token: str = Depends(current_token)):
+    """Return active authenticated sessions. Admin only."""
+    _prune_expired_sessions()
+    sessions = [
+        _session_payload(active_token, session, token)
+        for active_token, session in ACTIVE_TOKENS.items()
+    ]
+    sessions.sort(key=lambda item: (str(item.get("username") or ""), str(item.get("expires_at") or "")))
+    return {
+        "sessions": sessions,
+        "active_users": len({session["user_id"] for session in sessions if session.get("user_id")}),
+        "active_sessions": len(sessions),
+    }
+
+
+@app.delete("/auth/sessions/{session_id}")
+async def revoke_session(session_id: str, user: Dict[str, str] = Depends(require_admin), token: str = Depends(current_token)):
+    """Revoke one active session. Admin only."""
+    _prune_expired_sessions()
+    for active_token, session in list(ACTIVE_TOKENS.items()):
+        if session.get("session_id") == session_id:
+            ACTIVE_TOKENS.pop(active_token, None)
+            return {"revoked": True, "revoked_current": active_token == token}
+    raise HTTPException(status_code=404, detail="Session not found")
+
+
+@app.delete("/auth/sessions/user/{user_id}")
+async def revoke_user_sessions(user_id: int, user: Dict[str, str] = Depends(require_admin), token: str = Depends(current_token)):
+    """Revoke all active sessions for one user. Admin only."""
+    _prune_expired_sessions()
+    revoked, revoked_current = _revoke_sessions_for_user(user_id, token)
+    return {"revoked": revoked, "revoked_current": revoked_current}
 
 
 @app.patch("/auth/me")
@@ -564,18 +633,49 @@ async def create_user(request: UserCreateRequest, user: Dict[str, str] = Depends
         }
 
 
+@app.patch("/users/{user_id}/password")
+async def update_user_password(
+    user_id: int,
+    request: UserPasswordUpdateRequest,
+    user: Dict[str, str] = Depends(require_admin),
+    token: str = Depends(current_token),
+):
+    """Change a local user's password and revoke their active sessions. Admin only."""
+    if len(request.password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    with get_session() as db:
+        row = db.query(User).filter(User.id == user_id).first()
+        if not row:
+            raise HTTPException(status_code=404, detail="User not found")
+        row.password_hash = _hash_password(request.password)
+        db.flush()
+    revoked, revoked_current = _revoke_sessions_for_user(user_id, token)
+    return {"updated": True, "revoked_sessions": revoked, "revoked_current": revoked_current}
+
+
 @app.delete("/users/{user_id}")
-async def delete_user(user_id: int, user: Dict[str, str] = Depends(require_admin)):
-    """Delete a local user that does not own analyses. Admin only."""
+async def delete_user(user_id: int, user: Dict[str, str] = Depends(require_admin), token: str = Depends(current_token)):
+    """Delete a local user and their private analysis records. Admin only."""
     if user_id == int(user["id"]):
         raise HTTPException(status_code=400, detail="You cannot delete your own account")
     with get_session() as db:
-        owned_count = db.query(Analysis).filter(Analysis.user_id == user_id).count()
-        if owned_count:
-            raise HTTPException(status_code=400, detail="User owns analyses and cannot be deleted")
-        deleted = db.query(User).filter(User.id == user_id).delete()
+        row = db.query(User).filter(User.id == user_id).first()
+        if not row:
+            raise HTTPException(status_code=404, detail="User not found")
+        revoked, revoked_current = _revoke_sessions_for_user(user_id, token)
+        analysis_ids = [analysis_id for (analysis_id,) in db.query(Analysis.id).filter(Analysis.user_id == user_id).all()]
+        if analysis_ids:
+            db.query(LogEntry).filter(LogEntry.analysis_id.in_(analysis_ids)).delete(synchronize_session=False)
+            db.query(RecommendationHistory).filter(RecommendationHistory.analysis_id.in_(analysis_ids)).delete(synchronize_session=False)
+            db.query(Analysis).filter(Analysis.id.in_(analysis_ids)).delete(synchronize_session=False)
+        db.delete(row)
         db.flush()
-        return {"deleted": bool(deleted)}
+        return {
+            "deleted": True,
+            "deleted_analyses": len(analysis_ids),
+            "revoked_sessions": revoked,
+            "revoked_current": revoked_current,
+        }
 
 
 def _llm_response_config() -> Dict[str, Any]:
@@ -734,7 +834,7 @@ async def get_logs(analysis_id: str, user: Dict[str, str] = Depends(require_user
             db.query(LogEntry)
             .join(Analysis, Analysis.id == LogEntry.analysis_id)
             .filter(LogEntry.analysis_id == analysis_id)
-            .filter(True if user.get("role") == "admin" else Analysis.user_id == int(user["id"]))
+            .filter(Analysis.user_id == int(user["id"]))
             .order_by(LogEntry.id)
             .all()
         )
@@ -756,9 +856,8 @@ async def get_recommendation_history(ticker: str, user: Dict[str, str] = Depends
             db.query(RecommendationHistory)
             .join(Analysis, Analysis.id == RecommendationHistory.analysis_id)
             .filter(RecommendationHistory.ticker == normalized)
+            .filter(Analysis.user_id == int(user["id"]))
         )
-        if user.get("role") != "admin":
-            query = query.filter(Analysis.user_id == int(user["id"]))
         entries = (
             query
             .order_by(RecommendationHistory.created_at.asc())
