@@ -327,6 +327,13 @@ async function handleLogin(event) {
 }
 
 function logout(showMessage = true) {
+  const token = authToken();
+  if (token) {
+    fetch(`${API_BASE}/auth/logout`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    }).catch(() => {});
+  }
   stopAppSession();
   clearSession();
   showLogin();

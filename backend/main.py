@@ -22,11 +22,12 @@ import json
 import logging
 import secrets
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, BackgroundTasks, Depends, Header, HTTPException, Query
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, BackgroundTasks, Depends, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import inspect, text
@@ -47,13 +48,33 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_USERNAME = os.getenv("APP_USERNAME", "admin")
 DEFAULT_PASSWORD = os.getenv("APP_PASSWORD", "investment123")
-ACTIVE_TOKENS: Dict[str, Dict[str, str]] = {}
+APP_ENV = os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "development")).lower()
+IS_PRODUCTION = APP_ENV in {"prod", "production"}
+if IS_PRODUCTION and (DEFAULT_USERNAME == "admin" or DEFAULT_PASSWORD == "investment123"):
+    raise RuntimeError("Production deployments must set APP_USERNAME and APP_PASSWORD to non-default values.")
 
-app = FastAPI(title="Crew Investment Recommendation API")
+TOKEN_TTL_SECONDS = int(os.getenv("AUTH_TOKEN_TTL_SECONDS", str(8 * 60 * 60)))
+LOGIN_RATE_LIMIT_ATTEMPTS = int(os.getenv("LOGIN_RATE_LIMIT_ATTEMPTS", "5"))
+LOGIN_RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("LOGIN_RATE_LIMIT_WINDOW_SECONDS", "300"))
+CORS_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",")
+    if origin.strip()
+]
+PUBLIC_API_DOCS = os.getenv("PUBLIC_API_DOCS", "false").lower() in {"1", "true", "yes", "on"}
+ACTIVE_TOKENS: Dict[str, Dict[str, Any]] = {}
+LOGIN_ATTEMPTS: Dict[str, List[float]] = {}
+
+app = FastAPI(
+    title="Crew Investment Recommendation API",
+    docs_url="/docs" if PUBLIC_API_DOCS else None,
+    redoc_url="/redoc" if PUBLIC_API_DOCS else None,
+    openapi_url="/openapi.json" if PUBLIC_API_DOCS else None,
+)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -377,10 +398,36 @@ def _user_payload(user: User) -> Dict[str, str]:
     }
 
 
+def _client_key(request: Request) -> str:
+    forwarded_for = request.headers.get("x-forwarded-for", "")
+    if forwarded_for:
+        return forwarded_for.split(",", 1)[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _check_login_rate_limit(request: Request) -> None:
+    key = _client_key(request)
+    now = time.time()
+    window_start = now - LOGIN_RATE_LIMIT_WINDOW_SECONDS
+    attempts = [timestamp for timestamp in LOGIN_ATTEMPTS.get(key, []) if timestamp >= window_start]
+    if len(attempts) >= LOGIN_RATE_LIMIT_ATTEMPTS:
+        raise HTTPException(status_code=429, detail="Too many login attempts. Try again later.")
+    attempts.append(now)
+    LOGIN_ATTEMPTS[key] = attempts
+
+
+def _clear_login_attempts(request: Request) -> None:
+    LOGIN_ATTEMPTS.pop(_client_key(request), None)
+
+
 def _user_from_token(token: str | None) -> Dict[str, str]:
     if not token or token not in ACTIVE_TOKENS:
         raise HTTPException(status_code=401, detail="Authentication required")
-    return ACTIVE_TOKENS[token]
+    session = ACTIVE_TOKENS[token]
+    if float(session.get("expires_at", 0)) <= time.time():
+        ACTIVE_TOKENS.pop(token, None)
+        raise HTTPException(status_code=401, detail="Session expired")
+    return session["user"]
 
 
 def require_user(authorization: str | None = Header(default=None)) -> Dict[str, str]:
@@ -388,6 +435,12 @@ def require_user(authorization: str | None = Header(default=None)) -> Dict[str, 
         raise HTTPException(status_code=401, detail="Authentication required")
     token = authorization.split(" ", 1)[1].strip()
     return _user_from_token(token)
+
+
+def current_token(authorization: str | None = Header(default=None)) -> str:
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return authorization.split(" ", 1)[1].strip()
 
 
 def require_admin(user: Dict[str, str] = Depends(require_user)) -> Dict[str, str]:
@@ -410,16 +463,26 @@ def _can_access_analysis(analysis: Analysis | None, user: Dict[str, str]) -> boo
 
 
 @app.post("/auth/login")
-async def login(request: LoginRequest):
+async def login(request: LoginRequest, http_request: Request):
     """Authenticate a user and return a bearer token for API calls."""
+    _check_login_rate_limit(http_request)
     with get_session() as db:
         user = db.query(User).filter_by(username=request.username).first()
         if not user or not user.is_active or not _verify_password(request.password, user.password_hash):
             raise HTTPException(status_code=401, detail="Invalid username or password")
         user_payload = _user_payload(user)
+    _clear_login_attempts(http_request)
     token = secrets.token_urlsafe(32)
-    ACTIVE_TOKENS[token] = user_payload
-    return {"token": token, "user": user_payload}
+    expires_at = time.time() + TOKEN_TTL_SECONDS
+    ACTIVE_TOKENS[token] = {"user": user_payload, "expires_at": expires_at}
+    return {"token": token, "user": user_payload, "expires_at": datetime.utcfromtimestamp(expires_at).isoformat()}
+
+
+@app.post("/auth/logout")
+async def logout(token: str = Depends(current_token)):
+    """Revoke the current bearer token."""
+    ACTIVE_TOKENS.pop(token, None)
+    return {"logged_out": True}
 
 
 @app.get("/auth/me")
@@ -447,9 +510,9 @@ async def update_profile(request: UserProfileUpdateRequest, user: Dict[str, str]
             row.preferences = json.dumps(request.preferences)
         db.flush()
         payload = _user_payload(row)
-        for token, token_user in list(ACTIVE_TOKENS.items()):
-            if token_user.get("id") == payload["id"]:
-                ACTIVE_TOKENS[token] = payload
+        for token, session in list(ACTIVE_TOKENS.items()):
+            if session.get("user", {}).get("id") == payload["id"]:
+                session["user"] = payload
         return {"user": payload}
 
 
