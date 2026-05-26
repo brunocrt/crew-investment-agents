@@ -15,22 +15,27 @@ frontend can display a real‑time activity console.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import io
 import json
 import logging
+import secrets
 import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, BackgroundTasks, Depends
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, BackgroundTasks, Depends, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from sqlalchemy import inspect, text
 import yaml
 
 from .models.analysis import Analysis, LogEntry, AnalysisStatus
 from .models.candidate import Candidate
 from .models.recommendation_history import RecommendationHistory
+from .models.user import User
 from .models.base import Base, engine, get_session
 from .agents.crew import InvestmentRecommendationCrew
 from fastapi.staticfiles import StaticFiles
@@ -39,6 +44,10 @@ import os
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+DEFAULT_USERNAME = os.getenv("APP_USERNAME", "admin")
+DEFAULT_PASSWORD = os.getenv("APP_PASSWORD", "investment123")
+ACTIVE_TOKENS: Dict[str, Dict[str, str]] = {}
 
 app = FastAPI(title="Crew Investment Recommendation API")
 
@@ -50,8 +59,54 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Create DB tables at startup
-Base.metadata.create_all(bind=engine)
+def _hash_password(password: str, salt: str | None = None) -> str:
+    salt = salt or secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 120_000)
+    return f"{salt}${digest.hex()}"
+
+
+def _verify_password(password: str, password_hash: str) -> bool:
+    try:
+        salt, expected = password_hash.split("$", 1)
+    except ValueError:
+        return False
+    candidate = _hash_password(password, salt).split("$", 1)[1]
+    return hmac.compare_digest(candidate, expected)
+
+
+def _ensure_schema() -> None:
+    Base.metadata.create_all(bind=engine)
+    inspector = inspect(engine)
+    analysis_columns = {column["name"] for column in inspector.get_columns("analyses")}
+    if "user_id" not in analysis_columns:
+        with engine.begin() as connection:
+            connection.execute(text("ALTER TABLE analyses ADD COLUMN user_id INTEGER"))
+            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_analyses_user_id ON analyses (user_id)"))
+    user_columns = {column["name"] for column in inspector.get_columns("users")} if "users" in inspector.get_table_names() else set()
+    if user_columns and "preferences" not in user_columns:
+        with engine.begin() as connection:
+            connection.execute(text("ALTER TABLE users ADD COLUMN preferences TEXT"))
+
+
+def _seed_default_admin() -> None:
+    with get_session() as db:
+        user = db.query(User).filter_by(username=DEFAULT_USERNAME).first()
+        if user:
+            return
+        db.add(
+            User(
+                username=DEFAULT_USERNAME,
+                display_name="Investment Admin",
+                password_hash=_hash_password(DEFAULT_PASSWORD),
+                role="admin",
+                is_active=True,
+            )
+        )
+
+
+# Create DB tables and seed the default admin user at startup.
+_ensure_schema()
+_seed_default_admin()
 
 # We'll mount the frontend static files after declaring API routes to ensure
 # that API endpoints like `/analyses` take precedence.  If we mount the
@@ -149,6 +204,25 @@ class AgentConfigUpdateRequest(BaseModel):
     llm: Dict[str, Any]
 
 
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class UserCreateRequest(BaseModel):
+    username: str
+    password: str
+    display_name: str | None = None
+    role: str = "user"
+
+
+class UserProfileUpdateRequest(BaseModel):
+    display_name: str | None = None
+    current_password: str | None = None
+    new_password: str | None = None
+    preferences: Dict[str, Any] | None = None
+
+
 def _parse_crew_json(result_str: str) -> dict:
     """Parse CrewAI JSON output, including JSON wrapped in Markdown fences."""
     text = result_str.strip()
@@ -159,13 +233,65 @@ def _parse_crew_json(result_str: str) -> dict:
         if lines and lines[-1].strip().startswith("```"):
             lines = lines[:-1]
         text = "\n".join(lines).strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    for block in _extract_fenced_json_blocks(text):
+        try:
+            return json.loads(block)
+        except json.JSONDecodeError:
+            continue
+    candidate = _extract_first_json_object(text)
+    if candidate:
+        return json.loads(candidate)
     return json.loads(text)
+
+
+def _extract_fenced_json_blocks(text: str) -> List[str]:
+    blocks: List[str] = []
+    parts = text.split("```")
+    for index in range(1, len(parts), 2):
+        block = parts[index].strip()
+        if block.lower().startswith("json"):
+            block = block[4:].strip()
+        blocks.append(block)
+    return blocks
+
+
+def _extract_first_json_object(text: str) -> str | None:
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:index + 1]
+    return None
 
 
 CONFIG_DIR = Path(__file__).resolve().parent / "config"
 AGENTS_CONFIG_PATH = CONFIG_DIR / "agents.yaml"
 TASKS_CONFIG_PATH = CONFIG_DIR / "tasks.yaml"
 LLM_CONFIG_PATH = CONFIG_DIR / "llm.yaml"
+LLM_LOCAL_CONFIG_PATH = CONFIG_DIR / "llm.local.yaml"
 
 
 def _read_yaml(path: Path, default: Any) -> Any:
@@ -182,8 +308,171 @@ def _write_yaml(path: Path, payload: Any) -> None:
         yaml.safe_dump(payload, handle, sort_keys=False, allow_unicode=True)
 
 
+def _user_payload(user: User) -> Dict[str, str]:
+    return {
+        "id": str(user.id),
+        "username": user.username,
+        "display_name": user.display_name or user.username,
+        "role": user.role,
+        "preferences": json.loads(user.preferences or "{}"),
+    }
+
+
+def _user_from_token(token: str | None) -> Dict[str, str]:
+    if not token or token not in ACTIVE_TOKENS:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return ACTIVE_TOKENS[token]
+
+
+def require_user(authorization: str | None = Header(default=None)) -> Dict[str, str]:
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Authentication required")
+    token = authorization.split(" ", 1)[1].strip()
+    return _user_from_token(token)
+
+
+def require_admin(user: Dict[str, str] = Depends(require_user)) -> Dict[str, str]:
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return user
+
+
+def _analysis_query_for_user(db, user: Dict[str, str]):
+    query = db.query(Analysis)
+    if user.get("role") != "admin":
+        query = query.filter(Analysis.user_id == int(user["id"]))
+    return query
+
+
+def _can_access_analysis(analysis: Analysis | None, user: Dict[str, str]) -> bool:
+    if not analysis:
+        return False
+    return user.get("role") == "admin" or analysis.user_id == int(user["id"])
+
+
+@app.post("/auth/login")
+async def login(request: LoginRequest):
+    """Authenticate a user and return a bearer token for API calls."""
+    with get_session() as db:
+        user = db.query(User).filter_by(username=request.username).first()
+        if not user or not user.is_active or not _verify_password(request.password, user.password_hash):
+            raise HTTPException(status_code=401, detail="Invalid username or password")
+        user_payload = _user_payload(user)
+    token = secrets.token_urlsafe(32)
+    ACTIVE_TOKENS[token] = user_payload
+    return {"token": token, "user": user_payload}
+
+
+@app.get("/auth/me")
+async def auth_me(user: Dict[str, str] = Depends(require_user)):
+    """Return the authenticated user profile."""
+    return {"user": user}
+
+
+@app.patch("/auth/me")
+async def update_profile(request: UserProfileUpdateRequest, user: Dict[str, str] = Depends(require_user)):
+    """Update the authenticated user's profile, password and preferences."""
+    with get_session() as db:
+        row = db.query(User).filter_by(id=int(user["id"])).first()
+        if not row:
+            raise HTTPException(status_code=404, detail="User not found")
+        if request.display_name is not None:
+            row.display_name = request.display_name.strip() or row.username
+        if request.new_password:
+            if len(request.new_password) < 6:
+                raise HTTPException(status_code=400, detail="New password must be at least 6 characters")
+            if not request.current_password or not _verify_password(request.current_password, row.password_hash):
+                raise HTTPException(status_code=400, detail="Current password is incorrect")
+            row.password_hash = _hash_password(request.new_password)
+        if request.preferences is not None:
+            row.preferences = json.dumps(request.preferences)
+        db.flush()
+        payload = _user_payload(row)
+        for token, token_user in list(ACTIVE_TOKENS.items()):
+            if token_user.get("id") == payload["id"]:
+                ACTIVE_TOKENS[token] = payload
+        return {"user": payload}
+
+
+@app.get("/users")
+async def list_users(user: Dict[str, str] = Depends(require_admin)):
+    """Return all local users. Admin only."""
+    with get_session() as db:
+        users = db.query(User).order_by(User.role, User.username).all()
+        return [
+            {
+                "id": row.id,
+                "username": row.username,
+                "display_name": row.display_name or row.username,
+                "role": row.role,
+                "is_active": row.is_active,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+            }
+            for row in users
+        ]
+
+
+@app.post("/users", status_code=201)
+async def create_user(request: UserCreateRequest, user: Dict[str, str] = Depends(require_admin)):
+    """Create a local user. Admin only."""
+    username = request.username.strip()
+    if not username or len(request.password) < 6:
+        raise HTTPException(status_code=400, detail="Username and password of at least 6 characters are required")
+    role = request.role if request.role in {"admin", "user"} else "user"
+    with get_session() as db:
+        existing = db.query(User).filter_by(username=username).first()
+        if existing:
+            raise HTTPException(status_code=409, detail="Username already exists")
+        row = User(
+            username=username,
+            display_name=(request.display_name or username).strip(),
+            password_hash=_hash_password(request.password),
+            role=role,
+            is_active=True,
+        )
+        db.add(row)
+        db.flush()
+        return {
+            "id": row.id,
+            "username": row.username,
+            "display_name": row.display_name or row.username,
+            "role": row.role,
+            "is_active": row.is_active,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        }
+
+
+@app.delete("/users/{user_id}")
+async def delete_user(user_id: int, user: Dict[str, str] = Depends(require_admin)):
+    """Delete a local user that does not own analyses. Admin only."""
+    if user_id == int(user["id"]):
+        raise HTTPException(status_code=400, detail="You cannot delete your own account")
+    with get_session() as db:
+        owned_count = db.query(Analysis).filter(Analysis.user_id == user_id).count()
+        if owned_count:
+            raise HTTPException(status_code=400, detail="User owns analyses and cannot be deleted")
+        deleted = db.query(User).filter(User.id == user_id).delete()
+        db.flush()
+        return {"deleted": bool(deleted)}
+
+
+def _llm_response_config() -> Dict[str, Any]:
+    llm = {
+        **_read_yaml(LLM_CONFIG_PATH, {"model": "gpt-4o", "temperature": 0.3}),
+        **_read_yaml(LLM_LOCAL_CONFIG_PATH, {}),
+    }
+    has_override_key = bool(_read_yaml(LLM_LOCAL_CONFIG_PATH, {}).get("api_key"))
+    has_env_key = bool(os.getenv("OPENAI_API_KEY"))
+    return {
+        "model": llm.get("model") or os.getenv("OPENAI_MODEL", os.getenv("OPENAI_MODEL_NAME", "gpt-4o")),
+        "temperature": float(llm.get("temperature", os.getenv("OPENAI_TEMPERATURE", 0.3))),
+        "api_key_configured": has_override_key or has_env_key,
+        "api_key_source": "settings" if has_override_key else ("env" if has_env_key else "missing"),
+    }
+
+
 @app.post("/analyses", status_code=201)
-async def create_analysis(request: AnalysisCreateRequest, background_tasks: BackgroundTasks):
+async def create_analysis(request: AnalysisCreateRequest, background_tasks: BackgroundTasks, user: Dict[str, str] = Depends(require_user)):
     """Kick off a new analysis for the supplied tickers."""
     # Determine which tickers to use.  If the request body omits them or
     # provides an empty list, fall back to default candidates for
@@ -202,7 +491,7 @@ async def create_analysis(request: AnalysisCreateRequest, background_tasks: Back
     tickers_str = ",".join(tickers_list)
     # Create analysis record
     with get_session() as db:
-        analysis = Analysis(ticker=tickers_str, status=AnalysisStatus.RUNNING)
+        analysis = Analysis(ticker=tickers_str, user_id=int(user["id"]), status=AnalysisStatus.RUNNING)
         db.add(analysis)
         db.flush()  # assign id
         analysis_id = analysis.id
@@ -212,13 +501,14 @@ async def create_analysis(request: AnalysisCreateRequest, background_tasks: Back
 
 
 @app.get("/analyses")
-async def list_analyses():
+async def list_analyses(user: Dict[str, str] = Depends(require_user)):
     """Return a list of all analyses with basic metadata."""
     with get_session() as db:
-        analyses = db.query(Analysis).all()
+        analyses = _analysis_query_for_user(db, user).all()
         return [
             {
                 "id": a.id,
+                "user_id": a.user_id,
                 "tickers": a.ticker,
                 "created_at": a.created_at.isoformat(),
                 "status": a.status,
@@ -229,7 +519,7 @@ async def list_analyses():
 
 
 @app.get("/candidates")
-async def get_candidates(discover: bool = False):
+async def get_candidates(discover: bool = False, user: Dict[str, str] = Depends(require_user)):
     """Return the current candidate universe used by monitor mode."""
     from .services.candidates import discover_dynamic_candidates, list_candidates
 
@@ -255,37 +545,43 @@ async def get_candidates(discover: bool = False):
 
 
 @app.get("/agent-config")
-async def get_agent_config():
+async def get_agent_config(user: Dict[str, str] = Depends(require_admin)):
     """Return editable agent, task and LLM configuration."""
     return {
         "agents": _read_yaml(AGENTS_CONFIG_PATH, {}),
         "tasks": _read_yaml(TASKS_CONFIG_PATH, {}),
-        "llm": _read_yaml(LLM_CONFIG_PATH, {"model": "gpt-4o", "temperature": 0.3}),
+        "llm": _llm_response_config(),
     }
 
 
 @app.put("/agent-config")
-async def update_agent_config(request: AgentConfigUpdateRequest):
+async def update_agent_config(request: AgentConfigUpdateRequest, user: Dict[str, str] = Depends(require_admin)):
     """Persist agent, task and LLM configuration for future analysis runs."""
+    existing_llm = _read_yaml(LLM_LOCAL_CONFIG_PATH, {})
     llm = {
         "model": str(request.llm.get("model") or "gpt-4o").strip(),
         "temperature": float(request.llm.get("temperature", 0.3)),
     }
+    api_key = str(request.llm.get("api_key") or "").strip()
+    if api_key:
+        llm["api_key"] = api_key
+    elif existing_llm.get("api_key"):
+        llm["api_key"] = existing_llm.get("api_key")
     if not llm["model"]:
         llm["model"] = "gpt-4o"
     llm["temperature"] = max(0.0, min(2.0, llm["temperature"]))
     _write_yaml(AGENTS_CONFIG_PATH, request.agents)
     _write_yaml(TASKS_CONFIG_PATH, request.tasks)
-    _write_yaml(LLM_CONFIG_PATH, llm)
-    return {"status": "saved", "llm": llm}
+    _write_yaml(LLM_LOCAL_CONFIG_PATH, llm)
+    return {"status": "saved", "llm": _llm_response_config()}
 
 
 @app.get("/analyses/{analysis_id}")
-async def get_analysis(analysis_id: str):
+async def get_analysis(analysis_id: str, user: Dict[str, str] = Depends(require_user)):
     """Fetch details of a specific analysis."""
     with get_session() as db:
         analysis = db.query(Analysis).filter_by(id=analysis_id).first()
-        if not analysis:
+        if not _can_access_analysis(analysis, user):
             return {"error": "Analysis not found"}
         return {
             "id": analysis.id,
@@ -299,12 +595,14 @@ async def get_analysis(analysis_id: str):
 
 
 @app.get("/analyses/{analysis_id}/logs")
-async def get_logs(analysis_id: str):
+async def get_logs(analysis_id: str, user: Dict[str, str] = Depends(require_user)):
     """Retrieve persisted logs for an analysis."""
     with get_session() as db:
         entries = (
             db.query(LogEntry)
-            .filter_by(analysis_id=analysis_id)
+            .join(Analysis, Analysis.id == LogEntry.analysis_id)
+            .filter(LogEntry.analysis_id == analysis_id)
+            .filter(True if user.get("role") == "admin" else Analysis.user_id == int(user["id"]))
             .order_by(LogEntry.id)
             .all()
         )
@@ -318,13 +616,19 @@ async def get_logs(analysis_id: str):
 
 
 @app.get("/history/{ticker}")
-async def get_recommendation_history(ticker: str):
+async def get_recommendation_history(ticker: str, user: Dict[str, str] = Depends(require_user)):
     """Return chronological recommendation history for a ticker."""
     normalized = ticker.strip().upper()
     with get_session() as db:
-        entries = (
+        query = (
             db.query(RecommendationHistory)
-            .filter_by(ticker=normalized)
+            .join(Analysis, Analysis.id == RecommendationHistory.analysis_id)
+            .filter(RecommendationHistory.ticker == normalized)
+        )
+        if user.get("role") != "admin":
+            query = query.filter(Analysis.user_id == int(user["id"]))
+        entries = (
+            query
             .order_by(RecommendationHistory.created_at.asc())
             .all()
         )
@@ -344,8 +648,18 @@ async def get_recommendation_history(ticker: str):
 
 
 @app.websocket("/ws/{analysis_id}")
-async def websocket_endpoint(websocket: WebSocket, analysis_id: str):
+async def websocket_endpoint(websocket: WebSocket, analysis_id: str, token: str | None = Query(default=None)):
     """WebSocket endpoint for streaming live logs to the client."""
+    try:
+        user = _user_from_token(token)
+    except HTTPException:
+        await websocket.close(code=1008)
+        return
+    with get_session() as db:
+        analysis = db.query(Analysis).filter_by(id=analysis_id).first()
+        if not _can_access_analysis(analysis, user):
+            await websocket.close(code=1008)
+            return
     await manager.connect(analysis_id, websocket)
     try:
         while True:
@@ -385,6 +699,7 @@ async def run_analysis(analysis_id: str, tickers_str: str) -> None:
         with get_session() as db:
             analysis = db.query(Analysis).filter_by(id=analysis_id).first()
             if analysis:
+                analysis_user_id = analysis.user_id
                 analysis.status = AnalysisStatus.COMPLETED
                 # Attempt to parse JSON output.  If parsing fails, store
                 # the raw string as the summary.
@@ -490,7 +805,10 @@ async def run_analysis(analysis_id: str, tickers_str: str) -> None:
                             if ticker and rating in {'hold', 'sell'}:
                                 prior_buy = (
                                     db.query(RecommendationHistory)
-                                    .filter_by(ticker=ticker, rating='buy')
+                                    .join(Analysis, Analysis.id == RecommendationHistory.analysis_id)
+                                    .filter(RecommendationHistory.ticker == ticker)
+                                    .filter(RecommendationHistory.rating == 'buy')
+                                    .filter(Analysis.user_id == analysis_user_id)
                                     .first()
                                 )
                                 if not prior_buy:
@@ -553,9 +871,12 @@ async def run_analysis(analysis_id: str, tickers_str: str) -> None:
 
 # Delete an analysis and its logs
 @app.delete("/analyses/{analysis_id}")
-async def delete_analysis_endpoint(analysis_id: str):
+async def delete_analysis_endpoint(analysis_id: str, user: Dict[str, str] = Depends(require_user)):
     """Remove an analysis record and all associated logs."""
     with get_session() as db:
+        analysis = db.query(Analysis).filter_by(id=analysis_id).first()
+        if not _can_access_analysis(analysis, user):
+            raise HTTPException(status_code=404, detail="Analysis not found")
         # Delete logs first to maintain referential integrity
         db.query(LogEntry).filter_by(analysis_id=analysis_id).delete()
         db.query(RecommendationHistory).filter_by(analysis_id=analysis_id).delete()

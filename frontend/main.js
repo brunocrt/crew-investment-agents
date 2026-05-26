@@ -11,8 +11,11 @@ const API_BASE = (() => {
 const els = {
   actionStatus: document.getElementById("action-status"),
   addHolding: document.getElementById("add-holding"),
+  appView: document.getElementById("app-view"),
   agentConfigEditor: document.getElementById("agent-config-editor"),
   agentConfigList: document.getElementById("agent-config-list"),
+  agentLlmApiKey: document.getElementById("agent-llm-api-key"),
+  agentLlmKeyStatus: document.getElementById("agent-llm-key-status"),
   agentLlmModel: document.getElementById("agent-llm-model"),
   agentLlmTemperature: document.getElementById("agent-llm-temperature"),
   agentsNavBtn: document.getElementById("agents-nav-btn"),
@@ -20,6 +23,15 @@ const els = {
   analysesList: document.getElementById("analyses-list"),
   analyzeHoldings: document.getElementById("analyze-holdings"),
   apiStatus: document.getElementById("api-status"),
+  apiDocsLink: document.getElementById("api-docs-link"),
+  accountCurrentPassword: document.getElementById("account-current-password"),
+  accountDisplayName: document.getElementById("account-display-name"),
+  accountForm: document.getElementById("account-form"),
+  accountNewPassword: document.getElementById("account-new-password"),
+  accountStartAgentsOption: document.getElementById("account-start-agents-option"),
+  accountStartPage: document.getElementById("account-start-page"),
+  accountUsername: document.getElementById("account-username"),
+  adminUsersPanel: document.getElementById("admin-users-panel"),
   availableBalance: document.getElementById("available-balance"),
   candidateList: document.getElementById("candidate-list"),
   candidateRefreshMeta: document.getElementById("candidate-refresh-meta"),
@@ -34,16 +46,29 @@ const els = {
   holdingTicker: document.getElementById("holding-ticker"),
   investedAmount: document.getElementById("invested-amount"),
   lastRefresh: document.getElementById("last-refresh"),
+  loginError: document.getElementById("login-error"),
+  loginForm: document.getElementById("login-form"),
+  loginPassword: document.getElementById("login-password"),
+  loginUsername: document.getElementById("login-username"),
+  loginView: document.getElementById("login-view"),
+  loggedUserName: document.getElementById("logged-user-name"),
+  loggedUserRole: document.getElementById("logged-user-role"),
   logsCollapseBtn: document.getElementById("logs-collapse-btn"),
   logsConsole: document.getElementById("logs-console"),
   logsPanelBody: document.getElementById("logs-panel-body"),
   logsSubtitle: document.getElementById("logs-subtitle"),
+  logoutBtn: document.getElementById("logout-btn"),
   monitorBtn: document.getElementById("monitor-btn"),
   newAnalysisBtn: document.getElementById("new-analysis-btn"),
+  newUserDisplayName: document.getElementById("new-user-display-name"),
+  newUserPassword: document.getElementById("new-user-password"),
+  newUserRole: document.getElementById("new-user-role"),
+  newUserUsername: document.getElementById("new-user-username"),
   portfolioSummary: document.getElementById("portfolio-summary"),
   recommendations: document.getElementById("recommendations"),
   refreshBtn: document.getElementById("refresh-btn"),
   refreshCandidates: document.getElementById("refresh-candidates"),
+  refreshUsers: document.getElementById("refresh-users"),
   reloadAgentConfig: document.getElementById("reload-agent-config"),
   reportCollapseBtn: document.getElementById("report-collapse-btn"),
   reportPanelBody: document.getElementById("report-panel-body"),
@@ -73,6 +98,10 @@ const els = {
   tradeConfirm: document.getElementById("trade-confirm"),
   tradeModal: document.getElementById("trade-modal"),
   tradeTitle: document.getElementById("trade-title"),
+  userCreateForm: document.getElementById("user-create-form"),
+  usersList: document.getElementById("users-list"),
+  usersNavBtn: document.getElementById("users-nav-btn"),
+  usersView: document.getElementById("users-view"),
 };
 
 let currentSocket = null;
@@ -82,6 +111,9 @@ let analysesCache = [];
 let portfolioState = loadPortfolio();
 let agentConfigState = { agents: {}, tasks: {}, llm: { model: "gpt-4o", temperature: 0.3 } };
 let selectedAgentKey = null;
+let eventsWired = false;
+let appStarted = false;
+let currentUser = loadStoredUser();
 let sidebarCollapsed = localStorage.getItem("sidebar-collapsed") === "true";
 let panelCollapseState = loadPanelCollapseState();
 let activeView = localStorage.getItem("active-view") || "dashboard";
@@ -106,6 +138,161 @@ function refreshIcons() {
   }
 }
 
+function authToken() {
+  return sessionStorage.getItem("investment-console-token") || "";
+}
+
+function loadStoredUser() {
+  try {
+    return JSON.parse(sessionStorage.getItem("investment-console-user") || "null");
+  } catch (e) {
+    return null;
+  }
+}
+
+function storeSession(token, user) {
+  sessionStorage.setItem("investment-console-token", token);
+  sessionStorage.setItem("investment-console-user", JSON.stringify(user || null));
+  currentUser = user || null;
+  updateLoggedUserUI();
+}
+
+async function saveAccount(event) {
+  event.preventDefault();
+  const selectedStartPage = els.accountStartPage?.value || "dashboard";
+  const payload = {
+    display_name: els.accountDisplayName?.value || "",
+    preferences: {
+      ...(currentUser?.preferences || {}),
+      startPage: currentUser?.role === "admin" || selectedStartPage !== "agents" ? selectedStartPage : "dashboard",
+    },
+  };
+  const currentPassword = els.accountCurrentPassword?.value || "";
+  const newPassword = els.accountNewPassword?.value || "";
+  if (newPassword) {
+    payload.current_password = currentPassword;
+    payload.new_password = newPassword;
+  }
+  try {
+    const res = await apiFetch("/auth/me", {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({}));
+      throw new Error(error.detail || "Account update failed");
+    }
+    const data = await res.json();
+    storeSession(authToken(), data.user);
+    if (els.accountCurrentPassword) els.accountCurrentPassword.value = "";
+    if (els.accountNewPassword) els.accountNewPassword.value = "";
+    showToast("Account updated.", "success");
+  } catch (e) {
+    showToast(e.message || "Could not update account.", "error");
+  }
+}
+
+function clearSession() {
+  sessionStorage.removeItem("investment-console-token");
+  sessionStorage.removeItem("investment-console-user");
+  currentUser = null;
+  updateLoggedUserUI();
+}
+
+function isAuthenticated() {
+  return Boolean(authToken());
+}
+
+async function apiFetch(path, options = {}) {
+  const headers = {
+    ...(options.headers || {}),
+  };
+  if (!(options.body instanceof FormData) && options.body !== undefined) {
+    headers["Content-Type"] = headers["Content-Type"] || "application/json";
+  }
+  const token = authToken();
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+  const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
+  if (res.status === 401) {
+    logout(false);
+    throw new Error("Authentication required");
+  }
+  return res;
+}
+
+function updateLoggedUserUI() {
+  const isAdmin = currentUser?.role === "admin";
+  els.usersNavBtn?.classList.remove("hidden");
+  els.usersNavBtn?.classList.add("flex");
+  els.agentsNavBtn?.classList.toggle("hidden", !isAdmin);
+  els.agentsNavBtn?.classList.toggle("flex", isAdmin);
+  els.apiDocsLink?.classList.toggle("hidden", !isAdmin);
+  els.apiDocsLink?.classList.toggle("flex", isAdmin);
+  els.adminUsersPanel?.classList.toggle("hidden", !isAdmin);
+  els.accountStartAgentsOption?.classList.toggle("hidden", !isAdmin);
+  if (els.loggedUserName) {
+    els.loggedUserName.textContent = currentUser?.display_name || currentUser?.username || "Not signed in";
+  }
+  if (els.loggedUserRole) {
+    els.loggedUserRole.textContent = currentUser?.role ? `${currentUser.role} account` : "";
+  }
+  updateAccountForm();
+}
+
+function updateAccountForm() {
+  if (els.accountUsername) els.accountUsername.value = currentUser?.username || "";
+  if (els.accountDisplayName) els.accountDisplayName.value = currentUser?.display_name || "";
+  if (els.accountStartPage) {
+    const preferredStartPage = currentUser?.preferences?.startPage || "dashboard";
+    els.accountStartPage.value = currentUser?.role === "admin" || preferredStartPage !== "agents" ? preferredStartPage : "dashboard";
+  }
+}
+
+function showAuthenticatedApp() {
+  els.loginView?.classList.add("hidden");
+  els.appView?.classList.remove("hidden");
+  els.appView?.classList.add("flex");
+}
+
+function showLogin() {
+  els.appView?.classList.add("hidden");
+  els.appView?.classList.remove("flex");
+  els.loginView?.classList.remove("hidden");
+  if (els.loginUsername) els.loginUsername.value = "admin";
+  if (els.loginPassword) els.loginPassword.value = "";
+  refreshIcons();
+}
+
+async function handleLogin(event) {
+  event.preventDefault();
+  const username = String(els.loginUsername?.value || "").trim();
+  const password = String(els.loginPassword?.value || "");
+  els.loginError?.classList.add("hidden");
+  try {
+    const res = await fetch(`${API_BASE}/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password }),
+    });
+    if (!res.ok) throw new Error("Invalid credentials");
+    const data = await res.json();
+    storeSession(data.token, data.user);
+    showAuthenticatedApp();
+    await startApp();
+  } catch (e) {
+    els.loginError?.classList.remove("hidden");
+  }
+}
+
+function logout(showMessage = true) {
+  clearSession();
+  appStarted = false;
+  showLogin();
+  if (showMessage) showToast("Signed out.", "info");
+}
+
 function applySidebarState() {
   document.body.classList.toggle("sidebar-collapsed", sidebarCollapsed);
   if (!els.sidebarToggle) return;
@@ -125,15 +312,23 @@ function toggleSidebar() {
 }
 
 function setActiveView(view) {
-  activeView = ["settings", "agents"].includes(view) ? view : "dashboard";
+  const allowedViews = ["settings", "agents", "users"];
+  activeView = allowedViews.includes(view) ? view : "dashboard";
+  if (activeView === "agents" && currentUser?.role !== "admin") activeView = "dashboard";
   localStorage.setItem("active-view", activeView);
   const isSettings = activeView === "settings";
   const isAgents = activeView === "agents";
+  const isUsers = activeView === "users";
   els.dashboardView?.classList.toggle("hidden", activeView !== "dashboard");
   els.settingsView?.classList.toggle("hidden", !isSettings);
   els.agentsView?.classList.toggle("hidden", !isAgents);
+  els.usersView?.classList.toggle("hidden", !isUsers);
   if (isAgents && !Object.keys(agentConfigState.agents || {}).length) {
     loadAgentConfig();
+  }
+  if (isUsers) {
+    updateAccountForm();
+    if (currentUser?.role === "admin") loadUsers();
   }
   updateViewNav();
 }
@@ -143,6 +338,7 @@ function updateViewNav() {
     { button: els.dashboardNavBtn, view: "dashboard" },
     { button: els.settingsNavBtn, view: "settings" },
     { button: els.agentsNavBtn, view: "agents" },
+    { button: els.usersNavBtn, view: "users" },
   ].forEach(({ button, view }) => {
     if (!button) return;
     const active = activeView === view;
@@ -589,14 +785,14 @@ function setButtonLoading(button, isLoading, label) {
 }
 
 async function fetchAnalyses() {
-  const res = await fetch(`${API_BASE}/analyses`);
+  const res = await apiFetch("/analyses");
   if (!res.ok) throw new Error("Unable to fetch analyses");
   return res.json();
 }
 
 async function fetchCandidates(options = {}) {
   const discover = Boolean(options.discover);
-  const res = await fetch(`${API_BASE}/candidates${discover ? "?discover=true" : ""}`);
+  const res = await apiFetch(`/candidates${discover ? "?discover=true" : ""}`);
   if (!res.ok) throw new Error("Unable to fetch candidates");
   const candidates = await res.json();
   if (discover) markCandidateDiscovery();
@@ -604,9 +800,78 @@ async function fetchCandidates(options = {}) {
 }
 
 async function fetchAgentConfig() {
-  const res = await fetch(`${API_BASE}/agent-config`);
+  const res = await apiFetch("/agent-config");
   if (!res.ok) throw new Error("Unable to fetch agent config");
   return res.json();
+}
+
+async function fetchUsers() {
+  const res = await apiFetch("/users");
+  if (!res.ok) throw new Error("Unable to fetch users");
+  return res.json();
+}
+
+async function loadUsers() {
+  if (!els.usersList || currentUser?.role !== "admin") return;
+  els.usersList.innerHTML = `<p class="text-sm text-slate-500">Loading users...</p>`;
+  try {
+    const users = await fetchUsers();
+    renderUsers(users);
+  } catch (e) {
+    els.usersList.innerHTML = `<p class="text-sm text-red-300">Unable to load users.</p>`;
+  }
+}
+
+function renderUsers(users) {
+  if (!els.usersList) return;
+  if (!users.length) {
+    els.usersList.innerHTML = `<p class="text-sm text-slate-500">No users found.</p>`;
+    return;
+  }
+  els.usersList.innerHTML = users
+    .map((user) => `
+      <article class="rounded-md border border-slate-800 bg-slate-950/50 p-3">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div class="font-semibold text-white">${escapeHtml(user.display_name || user.username)}</div>
+            <div class="mt-1 text-xs text-slate-500">${escapeHtml(user.username)}</div>
+          </div>
+          <div class="flex flex-wrap items-center gap-2 text-xs">
+            <span class="rounded-full border border-cyan-400/20 bg-cyan-400/10 px-2.5 py-1 font-semibold text-cyan-200">${escapeHtml(user.role)}</span>
+            <span class="text-slate-500">${user.is_active ? "Active" : "Inactive"}</span>
+          </div>
+        </div>
+      </article>
+    `)
+    .join("");
+}
+
+async function createUser(event) {
+  event.preventDefault();
+  const payload = {
+    username: els.newUserUsername?.value || "",
+    display_name: els.newUserDisplayName?.value || "",
+    password: els.newUserPassword?.value || "",
+    role: els.newUserRole?.value || "user",
+  };
+  try {
+    const res = await apiFetch("/users", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({}));
+      throw new Error(error.detail || "Create user failed");
+    }
+    if (els.newUserUsername) els.newUserUsername.value = "";
+    if (els.newUserDisplayName) els.newUserDisplayName.value = "";
+    if (els.newUserPassword) els.newUserPassword.value = "";
+    if (els.newUserRole) els.newUserRole.value = "user";
+    showToast("User created.", "success");
+    await loadUsers();
+  } catch (e) {
+    showToast(e.message || "Could not create user.", "error");
+  }
 }
 
 function agentTaskKey(agentKey) {
@@ -653,6 +918,16 @@ function renderAgentConfigUI() {
   renderSelectedAgentEditor();
   if (els.agentLlmModel) els.agentLlmModel.value = agentConfigState.llm?.model || "gpt-4o";
   if (els.agentLlmTemperature) els.agentLlmTemperature.value = Number(agentConfigState.llm?.temperature ?? 0.3).toFixed(1);
+  if (els.agentLlmApiKey) els.agentLlmApiKey.value = "";
+  if (els.agentLlmKeyStatus) {
+    const source = agentConfigState.llm?.api_key_source || "missing";
+    const configured = Boolean(agentConfigState.llm?.api_key_configured);
+    const label = configured
+      ? `API key configured from ${source === "settings" ? "Agent Settings override" : ".env file"}.`
+      : "No API key configured. Add one here or set OPENAI_API_KEY in .env.";
+    els.agentLlmKeyStatus.textContent = label;
+    els.agentLlmKeyStatus.className = configured ? "text-xs text-emerald-300" : "text-xs text-amber-300";
+  }
   refreshIcons();
 }
 
@@ -764,11 +1039,14 @@ async function saveAgentConfig() {
     model: els.agentLlmModel?.value || "gpt-4o",
     temperature: clampNumber(els.agentLlmTemperature?.value, 0, 2, 0.3),
   };
+  const apiKey = String(els.agentLlmApiKey?.value || "").trim();
+  if (apiKey) {
+    agentConfigState.llm.api_key = apiKey;
+  }
   setButtonLoading(els.saveAgentConfig, true, "Saving");
   try {
-    const res = await fetch(`${API_BASE}/agent-config`, {
+    const res = await apiFetch("/agent-config", {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(agentConfigState),
     });
     if (!res.ok) throw new Error("Save failed");
@@ -1017,7 +1295,7 @@ async function selectAnalysis(id) {
   }
 
   try {
-    const logsRes = await fetch(`${API_BASE}/analyses/${id}/logs`);
+    const logsRes = await apiFetch(`/analyses/${id}/logs`);
     const logs = await logsRes.json();
     if (logs.length) {
       logs.forEach((entry) => appendLog(entry.message));
@@ -1035,7 +1313,7 @@ async function selectAnalysis(id) {
 
 function openLogSocket(id) {
   const wsBase = API_BASE.replace(/^http/, "ws");
-  const socket = new WebSocket(`${wsBase}/ws/${id}`);
+  const socket = new WebSocket(`${wsBase}/ws/${id}?token=${encodeURIComponent(authToken())}`);
   socket.onopen = () => appendLog("Live log stream connected.");
   socket.onmessage = (event) => appendLog(event.data);
   socket.onerror = () => appendLog("Live log stream encountered a connection issue.");
@@ -1052,25 +1330,17 @@ function appendLog(message) {
 }
 
 async function displayReport(analysisId) {
-  const res = await fetch(`${API_BASE}/analyses/${analysisId}`);
+  const res = await apiFetch(`/analyses/${analysisId}`);
   if (!res.ok) throw new Error("Unable to fetch analysis");
   const analysis = await res.json();
   updateSelectedStatus(analysis);
 
   let summaryText = analysis.summary || "";
   let recs = [];
-  const trimmedSummary = summaryText.trim();
-  if (trimmedSummary.startsWith("```")) {
-    summaryText = trimmedSummary.replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
-  }
-  if (summaryText && summaryText.trim().startsWith("{")) {
-    try {
-      const parsed = JSON.parse(summaryText);
-      summaryText = parsed.summary || summaryText;
-      recs = Array.isArray(parsed.recommendations) ? parsed.recommendations : [];
-    } catch (e) {
-      recs = [];
-    }
+  const parsedReport = parseReportPayload(summaryText);
+  if (parsedReport) {
+    summaryText = parsedReport.summary || stripJsonFromReport(summaryText);
+    recs = Array.isArray(parsedReport.recommendations) ? parsedReport.recommendations : [];
   }
   if (!recs.length && analysis.recommendation) {
     recs = analysis.recommendation.split(",").map((item) => {
@@ -1084,6 +1354,69 @@ async function displayReport(analysisId) {
     : `<p class="text-slate-500">${analysis.status === "running" ? "Report is being prepared." : "No summary available."}</p>`;
   renderRecommendations(recs);
   await refresh();
+}
+
+function parseReportPayload(text) {
+  const candidates = extractJsonCandidates(text);
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate);
+      if (parsed && typeof parsed === "object" && Array.isArray(parsed.recommendations)) {
+        return parsed;
+      }
+    } catch (e) {
+      // Try the next candidate.
+    }
+  }
+  return null;
+}
+
+function extractJsonCandidates(text) {
+  const value = String(text || "").trim();
+  const candidates = [];
+  const fenced = [...value.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)].map((match) => match[1].trim());
+  candidates.push(...fenced);
+  if (value.startsWith("{")) candidates.push(value);
+
+  const firstBrace = value.indexOf("{");
+  if (firstBrace >= 0) {
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let i = firstBrace; i < value.length; i += 1) {
+      const char = value[i];
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (char === "\\") {
+          escaped = true;
+        } else if (char === '"') {
+          inString = false;
+        }
+        continue;
+      }
+      if (char === '"') {
+        inString = true;
+      } else if (char === "{") {
+        depth += 1;
+      } else if (char === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          candidates.push(value.slice(firstBrace, i + 1));
+          break;
+        }
+      }
+    }
+  }
+  return [...new Set(candidates.filter(Boolean))];
+}
+
+function stripJsonFromReport(text) {
+  const value = String(text || "");
+  return value
+    .replace(/```(?:json)?\s*[\s\S]*?```/gi, "")
+    .replace(/### Recommendations\s*$/i, "")
+    .trim();
 }
 
 function renderRecommendations(recs) {
@@ -1614,9 +1947,8 @@ async function createAnalysis(tickers, options = {}) {
   appendLog("Analysis request sent. Waiting for backend acknowledgement...");
 
   try {
-    const res = await fetch(`${API_BASE}/analyses`, {
+    const res = await apiFetch("/analyses", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ tickers }),
     });
     if (!res.ok) throw new Error("Analysis request failed");
@@ -1748,7 +2080,7 @@ async function openHistoryModal(ticker) {
   els.historyBody.innerHTML = `<div class="flex items-center gap-2 text-slate-400"><span class="spinner inline-block h-4 w-4 rounded-full border-2 border-slate-400 border-r-transparent"></span>Loading history...</div>`;
   openModal(els.historyModal);
   try {
-    const res = await fetch(`${API_BASE}/history/${ticker}`);
+    const res = await apiFetch(`/history/${ticker}`);
     if (!res.ok) throw new Error("History unavailable");
     const history = await res.json();
     if (!history.length) {
@@ -1785,7 +2117,7 @@ async function deleteAnalysis(id) {
   if (!confirm("Delete this analysis?")) return;
   showToast("Deleting analysis...", "info");
   try {
-    const res = await fetch(`${API_BASE}/analyses/${id}`, { method: "DELETE" });
+    const res = await apiFetch(`/analyses/${id}`, { method: "DELETE" });
     if (!res.ok) throw new Error("Delete failed");
     if (selectedAnalysisId === id) {
       selectedAnalysisId = null;
@@ -1802,9 +2134,14 @@ async function deleteAnalysis(id) {
 }
 
 function wireEvents() {
+  if (eventsWired) return;
+  eventsWired = true;
+  els.loginForm?.addEventListener("submit", handleLogin);
+  els.logoutBtn?.addEventListener("click", logout);
   els.dashboardNavBtn?.addEventListener("click", () => setActiveView("dashboard"));
   els.settingsNavBtn?.addEventListener("click", () => setActiveView("settings"));
   els.agentsNavBtn?.addEventListener("click", () => setActiveView("agents"));
+  els.usersNavBtn?.addEventListener("click", () => setActiveView("users"));
   if (els.sidebarToggle) {
     els.sidebarToggle.addEventListener("click", toggleSidebar);
   }
@@ -1820,6 +2157,9 @@ function wireEvents() {
   els.refreshCandidates?.addEventListener("click", () => refresh({ discoverCandidates: true, spinCandidates: true }));
   els.reloadAgentConfig?.addEventListener("click", () => loadAgentConfig());
   els.saveAgentConfig?.addEventListener("click", saveAgentConfig);
+  els.refreshUsers?.addEventListener("click", loadUsers);
+  els.userCreateForm?.addEventListener("submit", createUser);
+  els.accountForm?.addEventListener("submit", saveAccount);
   els.clearLogs.addEventListener("click", () => {
     els.logsConsole.innerHTML = "";
     appendLog("Logs cleared locally.");
@@ -1880,7 +2220,13 @@ function wireEvents() {
   });
 }
 
-async function init() {
+async function startApp() {
+  if (appStarted) return;
+  appStarted = true;
+  updateLoggedUserUI();
+  if (!localStorage.getItem("active-view") && currentUser?.preferences?.startPage) {
+    activeView = currentUser.preferences.startPage;
+  }
   applySidebarState();
   applyPanelCollapseStates();
   setActiveView(activeView);
@@ -1890,7 +2236,6 @@ async function init() {
   setApiStatus("checking", "Checking");
   setEmptyReport("Select or start an analysis.");
   els.logsConsole.innerHTML = `<div class="text-slate-500">Agent output will stream here.</div>`;
-  wireEvents();
   try {
     await refresh();
   } catch (e) {
@@ -1909,6 +2254,17 @@ async function init() {
       // Status is already surfaced by refresh().
     }
   }, 8000);
+}
+
+async function init() {
+  wireEvents();
+  if (!isAuthenticated()) {
+    showLogin();
+    return;
+  }
+  currentUser = loadStoredUser();
+  showAuthenticatedApp();
+  await startApp();
 }
 
 init();

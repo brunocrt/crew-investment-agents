@@ -33,6 +33,7 @@ MANIFEST
 .env
 .env.local
 .env.*.local
+backend/config/llm.local.yaml
 
 # IDE and editor
 .vscode/
