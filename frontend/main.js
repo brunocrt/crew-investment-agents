@@ -1655,13 +1655,18 @@ function renderCandidateUniverse(candidates) {
 function renderCandidateRow(candidate) {
   const score = Number.isFinite(Number(candidate.discovery_score)) ? Number(candidate.discovery_score).toFixed(0) : "N/A";
   const theme = candidate.theme || candidate.sector || "Unclassified";
+  const source = String(candidate.source || "");
+  const sourceLabel = source === "tradingview_best_yearly" ? "TradingView 1Y" : source === "core" ? "Core" : "Discovery";
   return `
     <div class="soft-panel rounded-md px-3 py-2">
       <div class="flex items-center justify-between gap-2">
         <span class="text-sm font-semibold text-white">${escapeHtml(candidate.ticker)}</span>
         <span class="text-xs text-cyan-200">${escapeHtml(score)}</span>
       </div>
-      <p class="mt-1 truncate text-xs text-slate-500" title="${escapeHtml(candidate.reason || theme)}">${escapeHtml(theme)}</p>
+      <div class="mt-1 flex items-center justify-between gap-2">
+        <p class="min-w-0 truncate text-xs text-slate-500" title="${escapeHtml(candidate.reason || theme)}">${escapeHtml(theme)}</p>
+        <span class="shrink-0 rounded-full border border-slate-700 px-2 py-0.5 text-[10px] font-semibold text-slate-300">${escapeHtml(sourceLabel)}</span>
+      </div>
     </div>
   `;
 }

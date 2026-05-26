@@ -31,6 +31,9 @@ signals) across this set when no explicit tickers are provided.
 from __future__ import annotations
 
 import logging
+import os
+import re
+import urllib.request
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -40,6 +43,12 @@ from sqlalchemy.orm import Session
 from ..models.candidate import Candidate
 
 logger = logging.getLogger(__name__)
+
+TRADINGVIEW_BEST_PERFORMERS_URL = "https://www.tradingview.com/markets/stocks-usa/market-movers-best-performing/"
+TRADINGVIEW_SOURCE = "tradingview_best_yearly"
+TRADINGVIEW_DISCOVERY_ENABLED = os.getenv("TRADINGVIEW_CANDIDATES_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+TRADINGVIEW_FETCH_LIMIT = int(os.getenv("TRADINGVIEW_CANDIDATE_FETCH_LIMIT", "30"))
+TRADINGVIEW_SELECT_LIMIT = int(os.getenv("TRADINGVIEW_CANDIDATE_SELECT_LIMIT", "10"))
 
 
 CORE_THEMES: Dict[str, str] = {
@@ -74,6 +83,41 @@ DYNAMIC_THEME_UNIVERSE: Dict[str, List[str]] = {
     "cloud and data centers": ["ORCL", "IBM", "DELL", "HPE", "ANET", "CSCO", "EQIX", "DLR"],
     "energy infrastructure": ["ET", "KMI", "WMB", "OKE", "LNG", "TRGP", "BKR", "SLB"],
 }
+
+
+def _normalize_ticker(value: str) -> str:
+    return value.strip().upper().replace(".", "-")
+
+
+def _parse_tradingview_symbols(html: str, limit: int = TRADINGVIEW_FETCH_LIMIT) -> List[str]:
+    """Extract ordered US stock symbols from TradingView's yearly performers page."""
+    symbols: List[str] = []
+    seen = set()
+    for exchange, ticker in re.findall(r'href="/symbols/([A-Z]+)-([A-Z0-9.]+?)/"', html):
+        if exchange not in {"NASDAQ", "NYSE", "AMEX", "OTC"}:
+            continue
+        normalized = _normalize_ticker(ticker)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        symbols.append(normalized)
+        if len(symbols) >= limit:
+            break
+    return symbols
+
+
+def fetch_tradingview_best_performers(limit: int = TRADINGVIEW_FETCH_LIMIT) -> List[str]:
+    """Fetch TradingView's US stocks with the best yearly performance."""
+    request = urllib.request.Request(
+        TRADINGVIEW_BEST_PERFORMERS_URL,
+        headers={
+            "User-Agent": "Mozilla/5.0 (compatible; CrewInvestmentAgents/1.0)",
+            "Accept": "text/html,application/xhtml+xml",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=12) as response:
+        html = response.read().decode("utf-8", errors="ignore")
+    return _parse_tradingview_symbols(html, limit=limit)
 
 
 def get_default_candidate_tickers() -> List[str]:
@@ -180,6 +224,60 @@ def _score_market_candidate(ticker: str, theme: str) -> Optional[dict]:
         return None
 
 
+def _score_tradingview_candidate(ticker: str, rank: int) -> dict:
+    market_score = _score_market_candidate(ticker, "TradingView yearly performance")
+    if market_score:
+        market_score["theme"] = "yearly momentum"
+        market_score["source"] = TRADINGVIEW_SOURCE
+        market_score["raw_score"] = market_score["raw_score"] + max(0.0, 0.35 - (rank * 0.01))
+        market_score["reason"] = (
+            f"TradingView yearly-performance momentum candidate ranked #{rank + 1}; "
+            f"{market_score['reason']}"
+        )
+        return market_score
+    return {
+        "ticker": ticker,
+        "theme": "yearly momentum",
+        "sector": None,
+        "source": TRADINGVIEW_SOURCE,
+        "raw_score": max(0.0, 1.0 - (rank * 0.03)),
+        "discovery_score": 0.0,
+        "liquidity_ok": True,
+        "reason": f"TradingView yearly-performance momentum candidate ranked #{rank + 1}.",
+    }
+
+
+def _upsert_discovered_candidate(db: Session, existing: Dict[str, Candidate], item: dict, score: float, now: datetime) -> Candidate | None:
+    candidate = existing.get(item["ticker"])
+    if candidate:
+        if candidate.status == "archived":
+            return None
+        candidate.source = item.get("source") or candidate.source or "discovered"
+        candidate.status = "promoted" if candidate.status == "promoted" else "discovered"
+        candidate.theme = item["theme"]
+        candidate.sector = item["sector"]
+        candidate.reason = item["reason"]
+        candidate.discovery_score = score
+        candidate.liquidity_ok = item["liquidity_ok"]
+        candidate.last_discovered_at = now
+        candidate.updated_at = now
+        return candidate
+    candidate = Candidate(
+        ticker=item["ticker"],
+        source=item.get("source") or "discovered",
+        status="discovered",
+        theme=item["theme"],
+        sector=item["sector"],
+        reason=item["reason"],
+        discovery_score=score,
+        liquidity_ok=item["liquidity_ok"],
+        last_discovered_at=now,
+    )
+    db.add(candidate)
+    existing[item["ticker"]] = candidate
+    return candidate
+
+
 def discover_dynamic_candidates(db: Session, limit: int = 8) -> List[Candidate]:
     """Discover and persist additional candidates from strategy-adjacent themes."""
     seed_core_candidates(db)
@@ -193,47 +291,43 @@ def discover_dynamic_candidates(db: Session, limit: int = 8) -> List[Candidate]:
                 continue
             result = _score_market_candidate(normalized, theme)
             if result and result["liquidity_ok"]:
+                result["source"] = "discovered"
                 scored.append(result)
 
+    tradingview_items: List[dict] = []
+    if TRADINGVIEW_DISCOVERY_ENABLED:
+        try:
+            for rank, ticker in enumerate(fetch_tradingview_best_performers()):
+                if ticker in core:
+                    continue
+                tradingview_items.append(_score_tradingview_candidate(ticker, rank))
+        except Exception as exc:
+            logger.info("TradingView best-performers candidate discovery failed: %s", exc)
+
     scored.sort(key=lambda item: item["raw_score"], reverse=True)
+    tradingview_items.sort(key=lambda item: item["raw_score"], reverse=True)
     now = datetime.utcnow()
     discovered: List[Candidate] = []
     selected = scored[:limit]
-    selected_tickers = {item["ticker"] for item in selected}
-    for stale in db.query(Candidate).filter(Candidate.source == "discovered").all():
+    selected_tradingview = tradingview_items[:TRADINGVIEW_SELECT_LIMIT]
+    selected_tickers = {item["ticker"] for item in [*selected, *selected_tradingview]}
+    for stale in db.query(Candidate).filter(Candidate.source.in_(["discovered", TRADINGVIEW_SOURCE])).all():
         if stale.ticker not in selected_tickers and stale.status == "discovered":
             stale.discovery_score = min(stale.discovery_score or 0.0, 39.0)
             stale.updated_at = now
 
     for rank, item in enumerate(selected):
         item["discovery_score"] = round(max(40.0, 95.0 - (rank * 4.0)), 2)
-        candidate = existing.get(item["ticker"])
+        candidate = _upsert_discovered_candidate(db, existing, item, item["discovery_score"], now)
         if candidate:
-            if candidate.status == "archived":
-                continue
-            candidate.source = candidate.source or "discovered"
-            candidate.status = "promoted" if candidate.status == "promoted" else "discovered"
-            candidate.theme = item["theme"]
-            candidate.sector = item["sector"]
-            candidate.reason = item["reason"]
-            candidate.discovery_score = item["discovery_score"]
-            candidate.liquidity_ok = item["liquidity_ok"]
-            candidate.last_discovered_at = now
-            candidate.updated_at = now
-        else:
-            candidate = Candidate(
-                ticker=item["ticker"],
-                source="discovered",
-                status="discovered",
-                theme=item["theme"],
-                sector=item["sector"],
-                reason=item["reason"],
-                discovery_score=item["discovery_score"],
-                liquidity_ok=item["liquidity_ok"],
-                last_discovered_at=now,
-            )
-            db.add(candidate)
-        discovered.append(candidate)
+            discovered.append(candidate)
+
+    for rank, item in enumerate(selected_tradingview):
+        score = round(max(45.0, 92.0 - (rank * 3.0)), 2)
+        item["discovery_score"] = score
+        candidate = _upsert_discovered_candidate(db, existing, item, score, now)
+        if candidate:
+            discovered.append(candidate)
     return discovered
 
 

@@ -31,7 +31,7 @@ The main backend services are:
 - `backend/services/sell.py`: fundamental, technical, and distribution-day exit signals.
 - `backend/services/valuation.py`: valuation and quality profile.
 - `backend/services/scoring.py`: deterministic opportunity score, confidence, rating, evidence, and risk flags.
-- `backend/services/candidates.py`: candidate universe seeding, discovery, and monitor selection.
+- `backend/services/candidates.py`: candidate universe seeding, TradingView yearly-performer discovery, and monitor selection.
 
 ## Authentication And Users
 
@@ -79,7 +79,7 @@ Most endpoints require a bearer token from `POST /auth/login`.
 - `GET /analyses/{id}/logs`: retrieve persisted logs.
 - `DELETE /analyses/{id}`: delete an analysis and related logs/history.
 - `GET /history/{ticker}`: recommendation history for a ticker.
-- `GET /candidates?discover=true`: list or refresh the candidate universe.
+- `GET /candidates?discover=true`: list or refresh the candidate universe, including TradingView yearly-performance momentum candidates.
 - `GET /agent-config`: fetch agent configuration, admin only.
 - `PUT /agent-config`: save agent configuration, admin only.
 - `WebSocket /ws/{analysis_id}?token=...`: stream live run logs.
