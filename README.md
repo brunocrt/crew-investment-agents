@@ -1,118 +1,184 @@
 # Crew Investment Recommendation Agents
 
-This repository contains a multi‑agent investment recommendation system built
-with [CrewAI](https://www.crewai.com/) and powered by a FastAPI backend and a
-lightweight frontend.  The goal of the application is to demonstrate how
-autonomous agents can collaborate to identify actionable stock ideas based on
-real‑world signals such as capital expenditure trends, commodity price
-movements and institutional sector rotation.
+Crew Investment Recommendation Agents is a local investment analysis console built with CrewAI, FastAPI, SQLite, and a vanilla HTML/JavaScript frontend. It coordinates multiple agents and deterministic scoring services to evaluate stocks, show buy/sell/hold context, track portfolio positions, and preserve analysis history by user.
 
-> **Disclaimer**: This project is for educational purposes only.  It does not
-> constitute financial advice, and no investment decisions should be made
-> solely on the output of this software.
+> Disclaimer: This project is for education and experimentation only. It is not financial advice and should not be used as the sole basis for investment decisions.
 
-## Features
+## Highlights
 
-### Multi‑Agent Analysis
+- Multi-agent analysis for capex growth, pricing power, sector rotation, exit risk, and recommendation synthesis.
+- FastGraphs-inspired valuation context with fair value, margin of safety, valuation score, quality score, and interpretation panels.
+- Deterministic scoring with configurable risk tolerance and buy/valuation thresholds.
+- Authenticated frontend with default admin login and admin-only user registration.
+- User-scoped analyses, recommendation history, and local portfolio state.
+- Dashboard focused on investor actions: Buy Actions, Sell / Exit, Hold / Watch, plus a historical action trend chart.
+- Positions page for current holdings, cost basis, latest analyzed price, market value, P/L, and quick analyze/remove actions.
+- Analysis History page with search and filters for status/action type.
+- Financial Settings page for portfolio balance, holdings input, candidate universe, refresh cadence, and analysis preferences.
+- Agent Settings page for admin users to tune agents, tasks, LLM model, temperature, and API key override.
 
-The system orchestrates a team of four agents, each with a specific role:
+## Architecture
 
-* **Capex Researcher** – examines recent cash‑flow statements to detect
-  significant increases in capital expenditures among target companies.
-* **Pricing Power Analyst** – monitors commodity and component prices for
-  unexpected spikes that could indicate supply shortages.
-* **Institutional Rotation Analyst** – compares sector ETF performance to the
-  broader market to infer where large investors are allocating capital.
-* **Recommendation Strategist** – synthesises the preceding analyses into a
-  concise report with buy/hold recommendations.
+The backend is a FastAPI application using SQLAlchemy models persisted to `app.db`. Analysis runs execute as background tasks and stream logs to the frontend through WebSockets.
 
-The agents are implemented using CrewAI’s declarative YAML configs and
-custom tools that wrap Python functions.  Data is fetched via the
-[yfinance](https://github.com/ranaroussi/yfinance) library and processed
-into structured JSON before being passed to the language model for
-reasoning.
+The frontend is a static app served from `frontend/`. It uses Tailwind via CDN, Lucide icons, session-based auth tokens, and localStorage for per-user portfolio and UI preferences.
 
-### Backend API
+The main backend services are:
 
-The FastAPI server exposes endpoints to create new analyses, list existing
-ones, retrieve detailed results and fetch logs.  Analyses run in
-background tasks so that the API remains responsive.  All output printed
-during agent execution is captured and persisted to an SQLite database.
+- `backend/services/capex.py`: capital expenditure growth.
+- `backend/services/pricing.py`: commodity and component price spikes.
+- `backend/services/rotation.py`: sector ETF rotation versus SPY.
+- `backend/services/sell.py`: fundamental, technical, and distribution-day exit signals.
+- `backend/services/valuation.py`: valuation and quality profile.
+- `backend/services/scoring.py`: deterministic opportunity score, confidence, rating, evidence, and risk flags.
+- `backend/services/candidates.py`: candidate universe seeding, discovery, and monitor selection.
 
-* `POST /analyses` – Start a new analysis by providing a comma‑separated
-  list of tickers.  Returns a UUID for the created analysis.
-* `GET /analyses` – List all analyses with status and recommendation.
-* `GET /analyses/{id}` – Retrieve full details for a single analysis.
-* `GET /analyses/{id}/logs` – Fetch persisted log lines for an analysis.
-* `GET /ws/{id}` – WebSocket endpoint that streams live logs to the client.
+## Authentication And Users
 
-### Interactive Frontend
+The app requires login. By default, the backend seeds an admin account:
 
-The frontend is a simple HTML/JavaScript app styled with Tailwind via
-CDN.  It displays the number of analyses, counts the active agents,
-shows a list of recent analyses and allows the user to launch new
-analyses.  A live log console streams agent actions through a WebSocket
-connection, letting you observe the decision‑making process in real time.
+```text
+username: admin
+password: investment123
+```
 
-## Setup
+You can override the default seed account with:
 
-1. **Clone the repository**
+```bash
+APP_USERNAME=admin
+APP_PASSWORD=your-password
+```
 
-   ```bash
-   git clone https://github.com/brunocrt/crew-investment-agents.git
-   cd crew-investment-agents
-   ```
+Admin users can:
 
-2. **Install Python dependencies**
+- Register users.
+- View the Agent Settings page.
+- View API Docs from the sidebar.
+- Update agent/task/LLM configuration.
 
-   It is recommended to use a virtual environment:
+Regular users can:
 
-   ```bash
-   python3 -m venv venv
-   source venv/bin/activate
-   pip install -r requirements.txt
-   ```
+- Run analyses.
+- View only their own analyses and logs.
+- Manage their account preferences and password.
+- Track their own portfolio positions.
 
-3. **Configure environment variables**
+## Backend API
 
-   The system relies on an OpenAI API key to power the language model.  Set
-   the following variables in your shell or a `.env` file:
+Most endpoints require a bearer token from `POST /auth/login`.
 
-   ```bash
-   export OPENAI_API_KEY=sk-...
-   # Optional: override model and temperature
-   export OPENAI_MODEL=gpt-4-turbo
-   export OPENAI_TEMPERATURE=0.3
-   ```
+- `POST /auth/login`: authenticate and receive a token.
+- `GET /auth/me`: get current user profile.
+- `PATCH /auth/me`: update display name, password, and preferences.
+- `GET /users`: list users, admin only.
+- `POST /users`: create user, admin only.
+- `DELETE /users/{id}`: delete user, admin only.
+- `POST /analyses`: start an async analysis. Accepts `tickers` and `analysis_settings`.
+- `GET /analyses`: list analyses visible to the current user.
+- `GET /analyses/{id}`: retrieve full report JSON and metadata.
+- `GET /analyses/{id}/logs`: retrieve persisted logs.
+- `DELETE /analyses/{id}`: delete an analysis and related logs/history.
+- `GET /history/{ticker}`: recommendation history for a ticker.
+- `GET /candidates?discover=true`: list or refresh the candidate universe.
+- `GET /agent-config`: fetch agent configuration, admin only.
+- `PUT /agent-config`: save agent configuration, admin only.
+- `WebSocket /ws/{analysis_id}?token=...`: stream live run logs.
 
-4. **Run the backend**
+## Analysis Flow
 
-   Start the FastAPI server via Uvicorn:
+1. The user starts a new analysis, monitor run, position analysis, or holdings analysis.
+2. The frontend sends tickers plus an analysis settings snapshot, including risk tolerance.
+3. The backend creates an `Analysis` row and runs the CrewAI workflow in the background.
+4. Logs are persisted and streamed live to the UI.
+5. Crew output is parsed as JSON, then enriched with pricing, scoring, valuation, evidence, and risk context.
+6. Missing requested tickers are added as neutral fallback cards.
+7. The prior-buy guard prevents hold/sell from becoming active exit recommendations unless the user previously received a buy recommendation for that ticker.
+8. The report JSON and aggregate recommendation string are persisted.
+9. Recommendation history rows are saved per ticker.
 
-   ```bash
-   uvicorn backend.main:app --reload
-   ```
+Risk tolerance affects deterministic scoring. A higher dial lowers the required buy threshold and valuation threshold, while conservative settings require stronger evidence before a buy rating.
 
-   The API will be served at `http://localhost:8000`.
+## Frontend Pages
 
-5. **Open the frontend**
+- **Dashboard**: portfolio summary, action counts, market action trend, selected report, recommendation cards, and agent logs.
+- **Positions**: current holdings, allocation, latest analyzed market value, unrealized P/L, latest rating, and quick analyze/remove actions.
+- **Analysis History**: full searchable and filterable history, replacing the old long sidebar list.
+- **Financial Settings**: available balance, holdings input, candidate universe, candidate refresh cadence, and risk-tolerance dial.
+- **Agent Settings**: admin-only agent/task/LLM configuration, including API key override.
+- **Account**: display name, password, start page preference, and admin-only user registration/list.
 
-   Simply open `frontend/index.html` in your browser.  The page will
-   communicate with the backend running on `localhost:8000`.  If you
-   deploy the API elsewhere, adjust the `API_BASE` constant in
-   `frontend/main.js` accordingly.
+## Configuration
 
-## Development Notes
+Set the OpenAI API key in `.env`:
 
-* The backend persists data in an SQLite database located at `app.db`.  If
-  you wish to start fresh, delete this file before launching the server.
-* You can adjust the list of monitored commodities in
-  `backend/services/pricing.py` and the sectors analysed in
-  `backend/services/rotation.py`.
-* CrewAI is configured with `verbose=2`, which prints step‑by‑step
-  reasoning.  These logs are captured and streamed to the frontend.
+```bash
+OPENAI_API_KEY=sk-...
+```
+
+LLM behavior can also be configured from the Agent Settings page. The backend reads base configuration from:
+
+- `backend/config/agents.yaml`
+- `backend/config/tasks.yaml`
+- `backend/config/llm.yaml`
+
+Sensitive local overrides, including API key overrides, are stored in:
+
+```text
+backend/config/llm.local.yaml
+```
+
+That file is ignored by git.
+
+## Running With Podman Or Docker Compose
+
+```bash
+docker compose up --build -d
+```
+
+The current compose setup serves:
+
+- Frontend: `http://localhost:3000`
+- Backend: `http://localhost:8000`
+- API docs: `http://localhost:8000/docs`
+
+On Windows with Podman Desktop, the equivalent command used during development was:
+
+```powershell
+podman compose up --build -d
+```
+
+## Local Development
+
+Install dependencies:
+
+```bash
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+Run the backend:
+
+```bash
+uvicorn backend.main:app --reload
+```
+
+Serve or open the frontend from `frontend/index.html`. In container mode, Nginx serves the frontend on port `3000`.
+
+## Data And Storage
+
+- Backend data is stored in SQLite at `app.db`.
+- Backend analyses, logs, users, recommendation history, and candidates are database-backed.
+- Frontend portfolio positions are stored per user in localStorage under `investment-console-portfolio:<user id>`.
+- The old shared `portfolio` localStorage key is migrated once to the first logged-in user after upgrade.
+
+## Useful Development Checks
+
+```bash
+node --check frontend/main.js
+python -m py_compile backend/main.py backend/services/scoring.py
+```
 
 ## License
 
-This project is open‑sourced under the MIT License.  See the `LICENSE`
-file for details.
+This project is open source under the MIT License.
