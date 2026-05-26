@@ -287,6 +287,29 @@ def _extract_first_json_object(text: str) -> str | None:
     return None
 
 
+def _fallback_analysis_payload(result_str: str, tickers_str: str) -> dict:
+    requested_tickers = [ticker.strip().upper() for ticker in tickers_str.split(",") if ticker.strip()]
+    summary = result_str.strip() or "The analysis completed, but the agents did not return a structured report."
+    return {
+        "summary": summary,
+        "recommendations": [
+            {
+                "ticker": ticker,
+                "rating": "neutral",
+                "reason": (
+                    "This ticker was included in the analysis request, but the agents did not return "
+                    "a structured recommendation for it. Treat it as a monitored holding until a fresh "
+                    "analysis provides a stronger signal."
+                ),
+                "report_time": datetime.utcnow().isoformat(),
+                "evidence": [],
+                "risks": [{"signal": "missing_model_card", "detail": "No structured recommendation was returned."}],
+            }
+            for ticker in requested_tickers
+        ],
+    }
+
+
 CONFIG_DIR = Path(__file__).resolve().parent / "config"
 AGENTS_CONFIG_PATH = CONFIG_DIR / "agents.yaml"
 TASKS_CONFIG_PATH = CONFIG_DIR / "tasks.yaml"
@@ -850,9 +873,26 @@ async def run_analysis(analysis_id: str, tickers_str: str) -> None:
                     else:
                         analysis.summary = json.dumps(parsed)
                         analysis.recommendation = None
-                except Exception:
-                    analysis.summary = result_str
-                    analysis.recommendation = None
+                except Exception as exc:
+                    logger.warning("Analysis %s returned an unstructured report: %s", analysis_id, exc)
+                    fallback = _fallback_analysis_payload(result_str, tickers_str)
+                    fallback_recs = fallback.get("recommendations", [])
+                    analysis.summary = json.dumps(fallback)
+                    analysis.recommendation = ", ".join(
+                        f"{r.get('ticker')}: {r.get('rating')}" for r in fallback_recs
+                    ) if fallback_recs else None
+                    for rec in fallback_recs:
+                        db.add(
+                            RecommendationHistory(
+                                analysis_id=analysis_id,
+                                ticker=(rec.get('ticker') or '').upper(),
+                                rating=rec.get('rating') or 'neutral',
+                                current_price=rec.get('current_price'),
+                                percent_change=rec.get('percent_change'),
+                                report_time=datetime.utcnow(),
+                                reason=rec.get('reason'),
+                            )
+                        )
             db.flush()
     except Exception as exc:
         logger.exception("Analysis %s failed: %s", analysis_id, exc)

@@ -108,6 +108,7 @@ let currentSocket = null;
 let currentTrade = null;
 let selectedAnalysisId = null;
 let analysesCache = [];
+let candidateUniverseCache = [];
 let portfolioState = loadPortfolio();
 let agentConfigState = { agents: {}, tasks: {}, llm: { model: "gpt-4o", temperature: 0.3 } };
 let selectedAgentKey = null;
@@ -581,6 +582,25 @@ function portfolioPositions(portfolio = portfolioState) {
   return Array.isArray(portfolio?.positions)
     ? portfolio.positions.map(normalizePosition).filter(Boolean)
     : [];
+}
+
+function uniqueTickers(values) {
+  return [...new Set((values || []).map(normalizeTicker).filter(Boolean))];
+}
+
+function portfolioTickers() {
+  return portfolioPositions().map((position) => position.ticker);
+}
+
+function activeCandidateTickers() {
+  return uniqueTickers(
+    candidateUniverseCache
+      .filter((candidate) => {
+        const status = String(candidate.status || candidate.source || "discovered").toLowerCase();
+        return candidate.liquidity_ok !== false && status !== "archived" && status !== "rejected";
+      })
+      .map((candidate) => candidate.ticker)
+  );
 }
 
 function calculateInvested(portfolio = portfolioState) {
@@ -1068,6 +1088,7 @@ async function refresh(options = {}) {
     const discoverCandidates = shouldDiscoverCandidates(Boolean(options.discoverCandidates));
     const [analyses, candidates] = await Promise.all([fetchAnalyses(), fetchCandidates({ discover: discoverCandidates })]);
     analysesCache = analyses;
+    candidateUniverseCache = Array.isArray(candidates) ? candidates : [];
     renderStats(analyses);
     renderAnalyses(analyses);
     renderCandidateUniverse(candidates);
@@ -1348,12 +1369,40 @@ async function displayReport(analysisId) {
       return { ticker: parts[0]?.trim(), rating: parts[1]?.trim(), reason: "" };
     });
   }
+  recs = ensureRequestedTickerCards(recs, analysis);
 
   els.reportSummary.innerHTML = summaryText
     ? `<p class="whitespace-pre-wrap">${escapeHtml(summaryText)}</p>`
     : `<p class="text-slate-500">${analysis.status === "running" ? "Report is being prepared." : "No summary available."}</p>`;
   renderRecommendations(recs);
   await refresh();
+}
+
+function ensureRequestedTickerCards(recs, analysis) {
+  const rows = Array.isArray(recs) ? recs.filter(Boolean) : [];
+  const existing = new Set(rows.map((rec) => normalizeTicker(rec.ticker)).filter(Boolean));
+  const requested = String(analysis?.tickers || "")
+    .split(",")
+    .map(normalizeTicker)
+    .filter(Boolean);
+
+  requested.forEach((ticker) => {
+    if (existing.has(ticker)) return;
+    const position = findPortfolioPosition(ticker);
+    rows.push({
+      ticker,
+      rating: "neutral",
+      reason: position
+        ? "This stock is tracked in your portfolio, but the analysis output did not include a dedicated recommendation for it. Review it as a monitored holding and rerun holdings analysis for a fresh signal."
+        : "This ticker was included in the analysis request, but no dedicated recommendation was returned.",
+      report_time: analysis?.updated_at || analysis?.created_at,
+      evidence: position ? [{ type: "portfolio_holding", signal: "Tracked holding included in the analysis request." }] : [],
+      risks: position ? [{ type: "missing_model_card", signal: "No dedicated model recommendation was returned for this owned position." }] : [],
+    });
+    existing.add(ticker);
+  });
+
+  return rows;
 }
 
 function parseReportPayload(text) {
@@ -1939,6 +1988,8 @@ function formatEvidenceValue(value) {
 async function createAnalysis(tickers, options = {}) {
   const button = options.monitor ? els.monitorBtn : els.newAnalysisBtn;
   const label = options.monitor ? "Starting Monitor" : "Starting";
+  const ownedTickers = portfolioTickers();
+  let requestTickers = uniqueTickers([...(tickers || []), ...ownedTickers]);
   setButtonLoading(button, true, label);
   setActionStatus(options.monitor ? "Starting monitor run..." : "Starting analysis...", "info");
   showToast(options.monitor ? "Monitor run requested." : "Analysis requested.", "info");
@@ -1947,9 +1998,21 @@ async function createAnalysis(tickers, options = {}) {
   appendLog("Analysis request sent. Waiting for backend acknowledgement...");
 
   try {
+    if (options.monitor) {
+      let universeTickers = activeCandidateTickers();
+      if (!universeTickers.length) {
+        const candidates = await fetchCandidates();
+        candidateUniverseCache = Array.isArray(candidates) ? candidates : [];
+        universeTickers = activeCandidateTickers();
+      }
+      requestTickers = uniqueTickers([...universeTickers, ...ownedTickers]);
+    }
+    if (ownedTickers.length && requestTickers.length) {
+      appendLog(`Portfolio holdings included: ${ownedTickers.join(", ")}`);
+    }
     const res = await apiFetch("/analyses", {
       method: "POST",
-      body: JSON.stringify({ tickers }),
+      body: JSON.stringify({ tickers: requestTickers }),
     });
     if (!res.ok) throw new Error("Analysis request failed");
     const data = await res.json();
@@ -1959,7 +2022,7 @@ async function createAnalysis(tickers, options = {}) {
     appendLog(`Analysis queued: ${data.analysis_id}`);
     setActionStatus("Analysis queued. Connecting to live logs...", "success");
     showToast("Analysis started.", "success");
-    if (options.monitor || !tickers.length) {
+    if (options.monitor || !requestTickers.length) {
       markCandidateDiscovery();
     }
     await refresh();
@@ -2191,7 +2254,7 @@ function wireEvents() {
     showToast(`${normalizeTicker(position.ticker)} holding saved.`, "success");
   });
   els.analyzeHoldings?.addEventListener("click", async () => {
-    const tickers = portfolioPositions().map((position) => position.ticker);
+    const tickers = portfolioTickers();
     if (!tickers.length) {
       showToast("Add at least one holding before running analysis.", "error");
       return;
