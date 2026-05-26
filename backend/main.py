@@ -196,6 +196,7 @@ class AnalysisCreateRequest(BaseModel):
     tickers defined in `services.candidates.get_default_candidate_tickers`.
     """
     tickers: List[str] | None = None
+    analysis_settings: Dict[str, Any] | None = None
 
 
 class AgentConfigUpdateRequest(BaseModel):
@@ -287,11 +288,12 @@ def _extract_first_json_object(text: str) -> str | None:
     return None
 
 
-def _fallback_analysis_payload(result_str: str, tickers_str: str) -> dict:
+def _fallback_analysis_payload(result_str: str, tickers_str: str, analysis_settings: Dict[str, Any] | None = None) -> dict:
     requested_tickers = [ticker.strip().upper() for ticker in tickers_str.split(",") if ticker.strip()]
     summary = result_str.strip() or "The analysis completed, but the agents did not return a structured report."
     return {
         "summary": summary,
+        "analysis_settings": _normalize_analysis_settings(analysis_settings),
         "recommendations": [
             {
                 "ticker": ticker,
@@ -308,6 +310,40 @@ def _fallback_analysis_payload(result_str: str, tickers_str: str) -> dict:
             for ticker in requested_tickers
         ],
     }
+
+
+def _normalize_analysis_settings(settings: Dict[str, Any] | None) -> Dict[str, Any]:
+    settings = settings or {}
+    risk_tolerance = str(settings.get("riskTolerance") or settings.get("risk_tolerance") or "balanced").lower()
+    if risk_tolerance not in {"conservative", "balanced", "aggressive"}:
+        risk_tolerance = "balanced"
+
+    def number(name: str, fallback: float) -> float:
+        try:
+            return float(settings.get(name, fallback))
+        except (TypeError, ValueError):
+            return fallback
+
+    return {
+        "riskTolerance": risk_tolerance,
+        "riskToleranceDial": number("riskToleranceDial", 50),
+        "minOpportunityScore": number("minOpportunityScore", 70),
+        "minValuationScore": number("minValuationScore", 35),
+        "positionSizePct": number("positionSizePct", 5),
+        "stopLossPct": number("stopLossPct", 10),
+        "targetGainPct": number("targetGainPct", 20),
+    }
+
+
+def _analysis_settings_from_summary(summary: str | None) -> Dict[str, Any]:
+    if not summary:
+        return {}
+    try:
+        parsed = _parse_crew_json(summary)
+    except Exception:
+        return {}
+    settings = parsed.get("analysis_settings") or parsed.get("analysisSettings")
+    return settings if isinstance(settings, dict) else {}
 
 
 CONFIG_DIR = Path(__file__).resolve().parent / "config"
@@ -512,6 +548,7 @@ async def create_analysis(request: AnalysisCreateRequest, background_tasks: Back
             with get_session() as db:
                 tickers_list = select_monitor_tickers(db)
     tickers_str = ",".join(tickers_list)
+    analysis_settings = _normalize_analysis_settings(request.analysis_settings)
     # Create analysis record
     with get_session() as db:
         analysis = Analysis(ticker=tickers_str, user_id=int(user["id"]), status=AnalysisStatus.RUNNING)
@@ -519,7 +556,7 @@ async def create_analysis(request: AnalysisCreateRequest, background_tasks: Back
         db.flush()  # assign id
         analysis_id = analysis.id
     # Run the crew in the background
-    background_tasks.add_task(run_analysis, analysis_id, tickers_str)
+    background_tasks.add_task(run_analysis, analysis_id, tickers_str, analysis_settings)
     return {"analysis_id": analysis_id}
 
 
@@ -528,17 +565,22 @@ async def list_analyses(user: Dict[str, str] = Depends(require_user)):
     """Return a list of all analyses with basic metadata."""
     with get_session() as db:
         analyses = _analysis_query_for_user(db, user).all()
-        return [
-            {
+        payload = []
+        for a in analyses:
+            settings = _analysis_settings_from_summary(a.summary)
+            payload.append({
                 "id": a.id,
                 "user_id": a.user_id,
                 "tickers": a.ticker,
                 "created_at": a.created_at.isoformat(),
+                "updated_at": a.updated_at.isoformat(),
                 "status": a.status,
                 "recommendation": a.recommendation,
-            }
-            for a in analyses
-        ]
+                "analysis_settings": settings,
+                "risk_tolerance": settings.get("riskTolerance") or settings.get("risk_tolerance"),
+                "risk_tolerance_dial": settings.get("riskToleranceDial"),
+            })
+        return payload
 
 
 @app.get("/candidates")
@@ -606,6 +648,7 @@ async def get_analysis(analysis_id: str, user: Dict[str, str] = Depends(require_
         analysis = db.query(Analysis).filter_by(id=analysis_id).first()
         if not _can_access_analysis(analysis, user):
             return {"error": "Analysis not found"}
+        settings = _analysis_settings_from_summary(analysis.summary)
         return {
             "id": analysis.id,
             "tickers": analysis.ticker,
@@ -614,6 +657,9 @@ async def get_analysis(analysis_id: str, user: Dict[str, str] = Depends(require_
             "status": analysis.status,
             "recommendation": analysis.recommendation,
             "summary": analysis.summary,
+            "analysis_settings": settings,
+            "risk_tolerance": settings.get("riskTolerance") or settings.get("risk_tolerance"),
+            "risk_tolerance_dial": settings.get("riskToleranceDial"),
         }
 
 
@@ -692,7 +738,7 @@ async def websocket_endpoint(websocket: WebSocket, analysis_id: str, token: str 
         manager.disconnect(analysis_id, websocket)
 
 
-async def run_analysis(analysis_id: str, tickers_str: str) -> None:
+async def run_analysis(analysis_id: str, tickers_str: str, analysis_settings: Dict[str, Any] | None = None) -> None:
     """
     Execute the crew workflow and persist results and logs.
 
@@ -702,6 +748,7 @@ async def run_analysis(analysis_id: str, tickers_str: str) -> None:
     """
     # Prepare crew and inputs
     crew = InvestmentRecommendationCrew().crew()
+    analysis_settings = _normalize_analysis_settings(analysis_settings)
     # Capture and stream stdout line-by-line.
     original_stdout = sys.stdout
     loop = asyncio.get_running_loop()
@@ -728,6 +775,7 @@ async def run_analysis(analysis_id: str, tickers_str: str) -> None:
                 # the raw string as the summary.
                 try:
                     parsed = _parse_crew_json(result_str)
+                    parsed['analysis_settings'] = analysis_settings
                     # Before saving, enrich each recommendation with price
                     # information (current price and percent change) and a
                     # timestamp.  This provides additional context in the
@@ -741,7 +789,7 @@ async def run_analysis(analysis_id: str, tickers_str: str) -> None:
                         recs = []
                         parsed['recommendations'] = recs
                     requested_tickers = [t.strip().upper() for t in tickers_str.split(',') if t.strip()]
-                    signal_scores = calculate_signal_scores(requested_tickers)
+                    signal_scores = calculate_signal_scores(requested_tickers, analysis_settings)
                     # Build a set of tickers we've already got recommendations for
                     existing_rec_tickers = set()
                     for rec in recs:
@@ -778,7 +826,10 @@ async def run_analysis(analysis_id: str, tickers_str: str) -> None:
                                 rec['evidence'] = score.get('evidence', [])
                                 rec['risks'] = score.get('risks', [])
                                 rec['model_rating'] = rec.get('rating')
-                                if not rec.get('rating'):
+                                rec['rating_thresholds'] = score.get('rating_thresholds')
+                                if score.get('suggested_rating') == 'buy' and not rec.get('risks'):
+                                    rec['rating'] = 'buy'
+                                elif not rec.get('rating'):
                                     rec['rating'] = score.get('suggested_rating')
                     # Ensure every requested ticker is represented.  Split the
                     # tickers_str by commas, normalise to uppercase and add
@@ -820,6 +871,7 @@ async def run_analysis(analysis_id: str, tickers_str: str) -> None:
                                 neutral_entry['valuation'] = score.get('valuation')
                                 neutral_entry['evidence'] = score.get('evidence', [])
                                 neutral_entry['risks'] = score.get('risks', [])
+                                neutral_entry['rating_thresholds'] = score.get('rating_thresholds')
                             recs.append(neutral_entry)
                     if recs:
                         for rec in recs:
@@ -875,7 +927,7 @@ async def run_analysis(analysis_id: str, tickers_str: str) -> None:
                         analysis.recommendation = None
                 except Exception as exc:
                     logger.warning("Analysis %s returned an unstructured report: %s", analysis_id, exc)
-                    fallback = _fallback_analysis_payload(result_str, tickers_str)
+                    fallback = _fallback_analysis_payload(result_str, tickers_str, analysis_settings)
                     fallback_recs = fallback.get("recommendations", [])
                     analysis.summary = json.dumps(fallback)
                     analysis.recommendation = ", ".join(

@@ -61,11 +61,15 @@ def _evidence(signal: str, value: Any, weight: float, detail: str) -> Dict[str, 
     return {"signal": signal, "value": value, "weight": weight, "detail": detail}
 
 
-def calculate_signal_scores(tickers: Iterable[str]) -> Dict[str, Dict[str, Any]]:
+def calculate_signal_scores(tickers: Iterable[str], preferences: Optional[Dict[str, Any]] = None) -> Dict[str, Dict[str, Any]]:
     """Return deterministic scores and evidence for each requested ticker."""
     requested = [t.strip().upper() for t in tickers if t and t.strip()]
     if not requested:
         return {}
+    preferences = preferences or {}
+    min_opportunity_score = float(preferences.get("minOpportunityScore") or preferences.get("min_opportunity_score") or 70)
+    min_valuation_score = float(preferences.get("minValuationScore") or preferences.get("min_valuation_score") or 35) / 100
+    hold_threshold = max(35.0, min_opportunity_score - 25.0)
 
     try:
         price_spikes = get_price_spikes()
@@ -181,12 +185,12 @@ def calculate_signal_scores(tickers: Iterable[str]) -> Dict[str, Dict[str, Any]]
         observed_components = sum(1 for value in [capex_growth, price_spikes, rotation, valuation.get("has_valuation"), sell] if value not in (None, [], {}, False))
         confidence = round(min(1.0, 0.25 + observed_components * 0.18), 2)
 
-        valuation_allows_buy = not valuation.get("has_valuation") or valuation_score >= 0.35
+        valuation_allows_buy = not valuation.get("has_valuation") or valuation_score >= min_valuation_score
         if risk_score >= 1.0:
             suggested_rating = "sell"
-        elif final_score >= 70 and valuation_allows_buy:
+        elif final_score >= min_opportunity_score and valuation_allows_buy:
             suggested_rating = "buy"
-        elif final_score >= 45:
+        elif final_score >= hold_threshold:
             suggested_rating = "hold"
         else:
             suggested_rating = "neutral"
@@ -205,6 +209,11 @@ def calculate_signal_scores(tickers: Iterable[str]) -> Dict[str, Dict[str, Any]]
             "final_score": final_score,
             "confidence": confidence,
             "suggested_rating": suggested_rating,
+            "rating_thresholds": {
+                "min_opportunity_score": round(min_opportunity_score, 2),
+                "min_valuation_score": round(min_valuation_score, 3),
+                "hold_threshold": round(hold_threshold, 2),
+            },
             "valuation": valuation,
             "evidence": evidence,
             "risks": risks,

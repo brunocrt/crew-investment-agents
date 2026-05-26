@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1800 1200" preserveAspectRatio="xMidYMid slice">
+  <defs>
+    <linearGradient id="base" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#0b1120"/>
+      <stop offset="0.48" stop-color="#08111d"/>
+      <stop offset="1" stop-color="#05070b"/>
+    </linearGradient>
+    <linearGradient id="traceA" x1="0" x2="1" y1="0" y2="0">
+      <stop offset="0" stop-color="#22d3ee" stop-opacity="0"/>
+      <stop offset="0.26" stop-color="#22d3ee" stop-opacity="0.38"/>
+      <stop offset="0.7" stop-color="#34d399" stop-opacity="0.34"/>
+      <stop offset="1" stop-color="#34d399" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="traceB" x1="0" x2="1" y1="0" y2="0">
+      <stop offset="0" stop-color="#fbbf24" stop-opacity="0"/>
+      <stop offset="0.32" stop-color="#fbbf24" stop-opacity="0.28"/>
+      <stop offset="0.78" stop-color="#38bdf8" stop-opacity="0.2"/>
+      <stop offset="1" stop-color="#38bdf8" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <rect width="1800" height="1200" fill="url(#base)"/>
+  <g opacity="0.12">
+    <path d="M0 140h1800M0 300h1800M0 460h1800M0 620h1800M0 780h1800M0 940h1800M0 1100h1800" stroke="#94a3b8" stroke-width="1"/>
+    <path d="M120 0v1200M300 0v1200M480 0v1200M660 0v1200M840 0v1200M1020 0v1200M1200 0v1200M1380 0v1200M1560 0v1200M1740 0v1200" stroke="#94a3b8" stroke-width="1"/>
+  </g>
+  <g opacity="0.44">
+    <path d="M-80 780C86 705 175 596 324 625C474 654 517 803 666 758C818 712 830 504 984 484C1138 463 1199 644 1352 598C1498 555 1578 396 1880 430" fill="none" stroke="url(#traceA)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M-60 410C138 452 223 328 383 352C555 379 606 512 763 498C918 484 960 318 1116 310C1289 301 1323 454 1486 446C1620 439 1710 334 1860 350" fill="none" stroke="url(#traceB)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <g opacity="0.16">
+    <rect x="1230" y="160" width="310" height="190" rx="18" fill="#020617" stroke="#67e8f9"/>
+    <path d="M1275 285h210M1275 245h132M1275 205h184" stroke="#cbd5e1" stroke-width="9" stroke-linecap="round"/>
+    <rect x="1040" y="780" width="410" height="220" rx="20" fill="#020617" stroke="#34d399"/>
+    <path d="M1095 910h284M1095 868h172M1095 826h235" stroke="#cbd5e1" stroke-width="10" stroke-linecap="round"/>
+  </g>
+  <rect width="1800" height="1200" fill="#020617" opacity="0.34"/>
+</svg>

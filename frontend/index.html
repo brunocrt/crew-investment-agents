@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Crew Investment Dashboard</title>
+    <link rel="icon" type="image/svg+xml" href="./assets/favicon.svg" />
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
     <style>
@@ -18,8 +19,25 @@
 
       .app-shell {
         background:
-          linear-gradient(180deg, rgba(20, 24, 31, 0.96) 0%, rgba(9, 11, 16, 1) 34%),
+          linear-gradient(180deg, rgba(8, 13, 23, 0.9) 0%, rgba(9, 11, 16, 0.98) 42%),
+          url("./assets/app-background.svg") center top / cover fixed no-repeat,
           #090b10;
+      }
+
+      .app-frame {
+        position: relative;
+        isolation: isolate;
+      }
+
+      .app-frame::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        z-index: -1;
+        pointer-events: none;
+        background:
+          linear-gradient(90deg, rgba(2, 6, 23, 0.18) 0%, rgba(2, 6, 23, 0) 50%, rgba(2, 6, 23, 0.24) 100%),
+          radial-gradient(circle at 74% 12%, rgba(34, 211, 238, 0.1), transparent 26%);
       }
 
       .panel {
@@ -139,7 +157,7 @@
       </div>
     </section>
 
-    <div id="app-view" class="mx-auto hidden min-h-screen w-full max-w-[1500px] flex-col lg:flex-row">
+    <div id="app-view" class="app-frame mx-auto hidden min-h-screen w-full max-w-[1500px] flex-col lg:flex-row">
       <aside id="sidebar" class="border-b border-slate-800/80 bg-slate-950/70 px-5 py-4 transition-all duration-200 lg:sticky lg:top-0 lg:h-screen lg:w-[390px] lg:overflow-y-auto lg:border-b-0 lg:border-r lg:px-5 lg:py-6 scrollbar-thin">
         <div class="flex items-center justify-between">
           <div id="sidebar-brand">
@@ -189,6 +207,14 @@
             <button id="dashboard-nav-btn" class="view-nav-btn flex min-w-fit items-center gap-2 rounded-md bg-slate-800 px-3 py-2 text-sm font-medium text-white lg:w-full" data-view="dashboard">
               <i data-lucide="layout-dashboard" class="h-4 w-4"></i>
               Dashboard
+            </button>
+            <button id="positions-nav-btn" class="view-nav-btn flex min-w-fit items-center gap-2 rounded-md px-3 py-2 text-sm text-slate-300 hover:bg-slate-900 hover:text-white lg:w-full" data-view="positions">
+              <i data-lucide="briefcase-business" class="h-4 w-4"></i>
+              Positions
+            </button>
+            <button id="history-nav-btn" class="view-nav-btn flex min-w-fit items-center gap-2 rounded-md px-3 py-2 text-sm text-slate-300 hover:bg-slate-900 hover:text-white lg:w-full" data-view="history">
+              <i data-lucide="history" class="h-4 w-4"></i>
+              Analysis History
             </button>
             <button id="settings-nav-btn" class="view-nav-btn flex min-w-fit items-center gap-2 rounded-md px-3 py-2 text-sm text-slate-300 hover:bg-slate-900 hover:text-white lg:w-full" data-view="settings">
               <i data-lucide="sliders-horizontal" class="h-4 w-4"></i>
@@ -284,6 +310,87 @@
                 </div>
               </section>
             </div>
+          </section>
+        </div>
+
+        <div id="positions-view" class="hidden">
+          <section class="mt-5 space-y-4">
+            <section class="panel rounded-lg p-4">
+              <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                <div>
+                  <div class="flex items-center gap-2">
+                    <i data-lucide="briefcase-business" class="h-4 w-4 text-cyan-300"></i>
+                    <h3 class="text-base font-semibold text-white">Current Positions</h3>
+                  </div>
+                  <p class="mt-1 text-xs text-slate-500">Your tracked holdings, latest analyzed prices, and current action context.</p>
+                </div>
+                <div class="flex flex-wrap gap-2">
+                  <button id="positions-analyze" class="inline-flex items-center gap-2 rounded-md bg-emerald-500 px-3 py-2 text-xs font-semibold text-slate-950 hover:bg-emerald-400">
+                    <i data-lucide="activity" class="h-4 w-4"></i>
+                    Analyze Positions
+                  </button>
+                  <button id="positions-add-link" class="inline-flex items-center gap-2 rounded-md bg-slate-800 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-700">
+                    <i data-lucide="plus" class="h-4 w-4"></i>
+                    Add Holding
+                  </button>
+                </div>
+              </div>
+              <div id="positions-summary" class="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3"></div>
+            </section>
+
+            <section class="panel rounded-lg">
+              <div class="flex items-center justify-between border-b border-slate-800 px-4 py-3">
+                <div>
+                  <h3 class="text-base font-semibold text-white">Holdings</h3>
+                  <p class="text-xs text-slate-500">Market value uses the latest price captured in recommendation history.</p>
+                </div>
+                <span id="positions-count" class="text-xs text-slate-500"></span>
+              </div>
+              <div id="positions-list" class="divide-y divide-slate-800"></div>
+            </section>
+          </section>
+        </div>
+
+        <div id="history-view" class="hidden">
+          <section class="mt-5 panel rounded-lg">
+            <div class="border-b border-slate-800 px-4 py-3">
+              <div class="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
+                <div>
+                  <div class="flex items-center gap-2">
+                    <i data-lucide="history" class="h-4 w-4 text-cyan-300"></i>
+                    <h3 class="text-base font-semibold text-white">Analysis History</h3>
+                  </div>
+                  <p class="mt-1 text-xs text-slate-500">Search, filter, and reopen previous analysis reports.</p>
+                </div>
+                <div class="grid grid-cols-1 gap-2 sm:grid-cols-3 xl:min-w-[620px]">
+                  <label class="block">
+                    <span class="text-xs text-slate-500">Search</span>
+                    <input id="history-search" type="search" placeholder="Ticker or recommendation" class="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-400" />
+                  </label>
+                  <label class="block">
+                    <span class="text-xs text-slate-500">Status</span>
+                    <select id="history-status-filter" class="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-400">
+                      <option value="all">All statuses</option>
+                      <option value="completed">Completed</option>
+                      <option value="running">Running</option>
+                      <option value="failed">Failed</option>
+                      <option value="pending">Pending</option>
+                    </select>
+                  </label>
+                  <label class="block">
+                    <span class="text-xs text-slate-500">Action</span>
+                    <select id="history-action-filter" class="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-400">
+                      <option value="all">All actions</option>
+                      <option value="buy">Has buys</option>
+                      <option value="sell">Has sells</option>
+                      <option value="hold">Has holds</option>
+                      <option value="neutral">Has neutral</option>
+                    </select>
+                  </label>
+                </div>
+              </div>
+            </div>
+            <div id="history-list" class="divide-y divide-slate-800"></div>
           </section>
         </div>
 
@@ -396,14 +503,24 @@
                     <span class="text-xs text-slate-400">Minimum Valuation Score</span>
                     <input id="setting-min-valuation" type="number" min="0" max="100" step="1" class="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-white outline-none focus:border-cyan-400" />
                   </label>
-                  <label class="block">
-                    <span class="text-xs text-slate-400">Risk Tolerance</span>
-                    <select id="setting-risk-tolerance" class="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-white outline-none focus:border-cyan-400">
+                  <div class="rounded-md border border-slate-800 bg-slate-950/40 p-3">
+                    <div class="flex items-center justify-between gap-3">
+                      <span class="text-xs text-slate-400">Risk Tolerance</span>
+                      <span id="setting-risk-label" class="rounded-full border border-cyan-400/20 bg-cyan-400/10 px-2.5 py-1 text-xs font-semibold text-cyan-200">Balanced</span>
+                    </div>
+                    <input id="setting-risk-dial" type="range" min="0" max="100" step="1" class="mt-4 w-full accent-cyan-400" aria-label="Risk tolerance" />
+                    <div class="mt-2 flex justify-between text-[11px] text-slate-500">
+                      <span>Lower risk</span>
+                      <span>Balanced</span>
+                      <span>Higher risk</span>
+                    </div>
+                    <p id="setting-risk-summary" class="mt-3 text-xs leading-5 text-slate-400"></p>
+                    <select id="setting-risk-tolerance" class="hidden">
                       <option value="conservative">Conservative</option>
                       <option value="balanced">Balanced</option>
                       <option value="aggressive">Aggressive</option>
                     </select>
-                  </label>
+                  </div>
                   <label class="block">
                     <span class="text-xs text-slate-400">Candidate Refresh</span>
                     <select id="setting-candidate-refresh" class="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-white outline-none focus:border-cyan-400">

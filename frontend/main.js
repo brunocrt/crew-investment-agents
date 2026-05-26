@@ -36,10 +36,16 @@ const els = {
   candidateList: document.getElementById("candidate-list"),
   candidateRefreshMeta: document.getElementById("candidate-refresh-meta"),
   clearLogs: document.getElementById("clear-logs-btn"),
+  historyActionFilter: document.getElementById("history-action-filter"),
   historyBody: document.getElementById("history-body"),
   historyClose: document.getElementById("history-close"),
+  historyList: document.getElementById("history-list"),
   historyModal: document.getElementById("history-modal"),
+  historyNavBtn: document.getElementById("history-nav-btn"),
+  historySearch: document.getElementById("history-search"),
+  historyStatusFilter: document.getElementById("history-status-filter"),
   historyTitle: document.getElementById("history-title"),
+  historyView: document.getElementById("history-view"),
   holdingAverageCost: document.getElementById("holding-average-cost"),
   holdingShares: document.getElementById("holding-shares"),
   holdingsList: document.getElementById("holdings-list"),
@@ -64,6 +70,13 @@ const els = {
   newUserPassword: document.getElementById("new-user-password"),
   newUserRole: document.getElementById("new-user-role"),
   newUserUsername: document.getElementById("new-user-username"),
+  positionsAddLink: document.getElementById("positions-add-link"),
+  positionsAnalyze: document.getElementById("positions-analyze"),
+  positionsCount: document.getElementById("positions-count"),
+  positionsList: document.getElementById("positions-list"),
+  positionsNavBtn: document.getElementById("positions-nav-btn"),
+  positionsSummary: document.getElementById("positions-summary"),
+  positionsView: document.getElementById("positions-view"),
   portfolioSummary: document.getElementById("portfolio-summary"),
   recommendations: document.getElementById("recommendations"),
   refreshBtn: document.getElementById("refresh-btn"),
@@ -84,6 +97,9 @@ const els = {
   settingMinValuation: document.getElementById("setting-min-valuation"),
   settingCandidateRefresh: document.getElementById("setting-candidate-refresh"),
   settingPositionSize: document.getElementById("setting-position-size"),
+  settingRiskDial: document.getElementById("setting-risk-dial"),
+  settingRiskLabel: document.getElementById("setting-risk-label"),
+  settingRiskSummary: document.getElementById("setting-risk-summary"),
   settingRiskTolerance: document.getElementById("setting-risk-tolerance"),
   settingStopLoss: document.getElementById("setting-stop-loss"),
   settingTargetGain: document.getElementById("setting-target-gain"),
@@ -109,12 +125,14 @@ let currentTrade = null;
 let selectedAnalysisId = null;
 let analysesCache = [];
 let candidateUniverseCache = [];
+let currentUser = loadStoredUser();
 let portfolioState = loadPortfolio();
+let positionMarketCache = {};
 let agentConfigState = { agents: {}, tasks: {}, llm: { model: "gpt-4o", temperature: 0.3 } };
 let selectedAgentKey = null;
 let eventsWired = false;
 let appStarted = false;
-let currentUser = loadStoredUser();
+let refreshTimerId = null;
 let sidebarCollapsed = localStorage.getItem("sidebar-collapsed") === "true";
 let panelCollapseState = loadPanelCollapseState();
 let activeView = localStorage.getItem("active-view") || "dashboard";
@@ -155,7 +173,9 @@ function storeSession(token, user) {
   sessionStorage.setItem("investment-console-token", token);
   sessionStorage.setItem("investment-console-user", JSON.stringify(user || null));
   currentUser = user || null;
+  portfolioState = loadPortfolio();
   updateLoggedUserUI();
+  updatePortfolioUI(portfolioState);
 }
 
 async function saveAccount(event) {
@@ -197,7 +217,9 @@ function clearSession() {
   sessionStorage.removeItem("investment-console-token");
   sessionStorage.removeItem("investment-console-user");
   currentUser = null;
+  portfolioState = defaultPortfolio();
   updateLoggedUserUI();
+  updatePortfolioUI(portfolioState);
 }
 
 function isAuthenticated() {
@@ -205,16 +227,17 @@ function isAuthenticated() {
 }
 
 async function apiFetch(path, options = {}) {
+  const token = authToken();
+  if (!token) {
+    throw new Error("Authentication required");
+  }
   const headers = {
     ...(options.headers || {}),
   };
   if (!(options.body instanceof FormData) && options.body !== undefined) {
     headers["Content-Type"] = headers["Content-Type"] || "application/json";
   }
-  const token = authToken();
-  if (token) {
-    headers.Authorization = `Bearer ${token}`;
-  }
+  headers.Authorization = `Bearer ${token}`;
   const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
   if (res.status === 401) {
     logout(false);
@@ -266,6 +289,22 @@ function showLogin() {
   refreshIcons();
 }
 
+function stopAppSession() {
+  appStarted = false;
+  if (refreshTimerId) {
+    clearInterval(refreshTimerId);
+    refreshTimerId = null;
+  }
+  if (currentSocket) {
+    currentSocket.close();
+    currentSocket = null;
+  }
+  selectedAnalysisId = null;
+  analysesCache = [];
+  candidateUniverseCache = [];
+  positionMarketCache = {};
+}
+
 async function handleLogin(event) {
   event.preventDefault();
   const username = String(els.loginUsername?.value || "").trim();
@@ -288,8 +327,8 @@ async function handleLogin(event) {
 }
 
 function logout(showMessage = true) {
+  stopAppSession();
   clearSession();
-  appStarted = false;
   showLogin();
   if (showMessage) showToast("Signed out.", "info");
 }
@@ -313,17 +352,26 @@ function toggleSidebar() {
 }
 
 function setActiveView(view) {
-  const allowedViews = ["settings", "agents", "users"];
+  const allowedViews = ["settings", "positions", "history", "agents", "users"];
   activeView = allowedViews.includes(view) ? view : "dashboard";
   if (activeView === "agents" && currentUser?.role !== "admin") activeView = "dashboard";
   localStorage.setItem("active-view", activeView);
   const isSettings = activeView === "settings";
+  const isPositions = activeView === "positions";
+  const isHistory = activeView === "history";
   const isAgents = activeView === "agents";
   const isUsers = activeView === "users";
   els.dashboardView?.classList.toggle("hidden", activeView !== "dashboard");
+  els.positionsView?.classList.toggle("hidden", !isPositions);
+  els.historyView?.classList.toggle("hidden", !isHistory);
   els.settingsView?.classList.toggle("hidden", !isSettings);
   els.agentsView?.classList.toggle("hidden", !isAgents);
   els.usersView?.classList.toggle("hidden", !isUsers);
+  if (isPositions) {
+    renderPositionsPage();
+    loadPositionMarketData();
+  }
+  if (isHistory) renderAnalysisHistory(analysesCache);
   if (isAgents && !Object.keys(agentConfigState.agents || {}).length) {
     loadAgentConfig();
   }
@@ -337,11 +385,17 @@ function setActiveView(view) {
 function updateViewNav() {
   [
     { button: els.dashboardNavBtn, view: "dashboard" },
+    { button: els.positionsNavBtn, view: "positions" },
+    { button: els.historyNavBtn, view: "history" },
     { button: els.settingsNavBtn, view: "settings" },
     { button: els.agentsNavBtn, view: "agents" },
     { button: els.usersNavBtn, view: "users" },
   ].forEach(({ button, view }) => {
     if (!button) return;
+    if (view === "agents" && currentUser?.role !== "admin") {
+      button.className = "view-nav-btn hidden min-w-fit items-center gap-2 rounded-md px-3 py-2 text-sm text-slate-300 hover:bg-slate-900 hover:text-white lg:w-full";
+      return;
+    }
     const active = activeView === view;
     button.className = active
       ? "view-nav-btn flex min-w-fit items-center gap-2 rounded-md bg-slate-800 px-3 py-2 text-sm font-medium text-white lg:w-full"
@@ -367,23 +421,30 @@ function loadAnalysisSettings() {
     minOpportunityScore: 70,
     minValuationScore: 35,
     riskTolerance: "balanced",
+    riskToleranceDial: 50,
     candidateRefreshCadence: "monitor",
   };
   try {
-    return { ...defaults, ...JSON.parse(localStorage.getItem("analysis-settings") || "{}") };
+    const stored = { ...defaults, ...JSON.parse(localStorage.getItem("analysis-settings") || "{}") };
+    if (!Number.isFinite(Number(stored.riskToleranceDial))) {
+      stored.riskToleranceDial = dialFromRiskTolerance(stored.riskTolerance);
+    }
+    return stored;
   } catch (e) {
     return defaults;
   }
 }
 
 function saveAnalysisSettings() {
+  const riskDial = clampNumber(els.settingRiskDial?.value, 0, 100, dialFromRiskTolerance(els.settingRiskTolerance?.value));
   analysisSettings = {
     positionSizePct: clampNumber(els.settingPositionSize?.value, 1, 100, 5),
     stopLossPct: clampNumber(els.settingStopLoss?.value, 1, 80, 10),
     targetGainPct: clampNumber(els.settingTargetGain?.value, 1, 300, 20),
     minOpportunityScore: clampNumber(els.settingMinOpportunity?.value, 0, 100, 70),
     minValuationScore: clampNumber(els.settingMinValuation?.value, 0, 100, 35),
-    riskTolerance: els.settingRiskTolerance?.value || "balanced",
+    riskTolerance: riskToleranceFromDial(riskDial),
+    riskToleranceDial: riskDial,
     candidateRefreshCadence: els.settingCandidateRefresh?.value || "monitor",
   };
   localStorage.setItem("analysis-settings", JSON.stringify(analysisSettings));
@@ -392,14 +453,91 @@ function saveAnalysisSettings() {
 }
 
 function updateAnalysisSettingsUI() {
+  const riskDial = clampNumber(analysisSettings.riskToleranceDial, 0, 100, dialFromRiskTolerance(analysisSettings.riskTolerance));
   if (els.settingPositionSize) els.settingPositionSize.value = Number(analysisSettings.positionSizePct).toFixed(1);
   if (els.settingStopLoss) els.settingStopLoss.value = Number(analysisSettings.stopLossPct).toFixed(1);
   if (els.settingTargetGain) els.settingTargetGain.value = Number(analysisSettings.targetGainPct).toFixed(1);
   if (els.settingMinOpportunity) els.settingMinOpportunity.value = Number(analysisSettings.minOpportunityScore).toFixed(0);
   if (els.settingMinValuation) els.settingMinValuation.value = Number(analysisSettings.minValuationScore).toFixed(0);
-  if (els.settingRiskTolerance) els.settingRiskTolerance.value = analysisSettings.riskTolerance || "balanced";
+  if (els.settingRiskDial) els.settingRiskDial.value = String(riskDial);
+  renderRiskToleranceDial(riskDial);
   if (els.settingCandidateRefresh) els.settingCandidateRefresh.value = analysisSettings.candidateRefreshCadence || "monitor";
   updateCandidateRefreshMeta();
+}
+
+function riskToleranceFromDial(value) {
+  const dial = clampNumber(value, 0, 100, 50);
+  if (dial < 34) return "conservative";
+  if (dial > 66) return "aggressive";
+  return "balanced";
+}
+
+function dialFromRiskTolerance(value) {
+  const normalized = String(value || "balanced").toLowerCase();
+  if (normalized === "conservative") return 15;
+  if (normalized === "aggressive") return 85;
+  return 50;
+}
+
+function interpolateRiskSetting(dial, conservative, balanced, aggressive) {
+  const value = clampNumber(dial, 0, 100, 50);
+  if (value <= 50) {
+    const progress = value / 50;
+    return conservative + (balanced - conservative) * progress;
+  }
+  const progress = (value - 50) / 50;
+  return balanced + (aggressive - balanced) * progress;
+}
+
+function riskPreferenceProfile(dial) {
+  const value = clampNumber(dial, 0, 100, 50);
+  const riskTolerance = riskToleranceFromDial(value);
+  const labels = {
+    conservative: "Conservative",
+    balanced: "Balanced",
+    aggressive: "Aggressive",
+  };
+  const summaries = {
+    conservative: "Prioritizes smaller positions, tighter stops, stronger opportunity scores, and better valuation support.",
+    balanced: "Keeps default position sizing and signal thresholds in the middle of the risk range.",
+    aggressive: "Allows larger positions, wider stops, higher targets, and lower signal thresholds for more opportunities.",
+  };
+  return {
+    value,
+    riskTolerance,
+    label: labels[riskTolerance],
+    summary: summaries[riskTolerance],
+    positionSizePct: interpolateRiskSetting(value, 3, 5, 10),
+    stopLossPct: interpolateRiskSetting(value, 7, 10, 16),
+    targetGainPct: interpolateRiskSetting(value, 14, 20, 35),
+    minOpportunityScore: interpolateRiskSetting(value, 82, 70, 58),
+    minValuationScore: interpolateRiskSetting(value, 50, 35, 20),
+  };
+}
+
+function renderRiskToleranceDial(dial) {
+  const profile = riskPreferenceProfile(dial);
+  if (els.settingRiskTolerance) els.settingRiskTolerance.value = profile.riskTolerance;
+  if (els.settingRiskLabel) {
+    els.settingRiskLabel.textContent = `${profile.label} (${Math.round(profile.value)})`;
+    els.settingRiskLabel.className = profile.riskTolerance === "aggressive"
+      ? "rounded-full border border-amber-400/30 bg-amber-400/10 px-2.5 py-1 text-xs font-semibold text-amber-200"
+      : profile.riskTolerance === "conservative"
+        ? "rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2.5 py-1 text-xs font-semibold text-emerald-200"
+        : "rounded-full border border-cyan-400/20 bg-cyan-400/10 px-2.5 py-1 text-xs font-semibold text-cyan-200";
+  }
+  if (els.settingRiskSummary) els.settingRiskSummary.textContent = profile.summary;
+}
+
+function applyRiskToleranceDial(value) {
+  const profile = riskPreferenceProfile(value);
+  if (els.settingRiskDial) els.settingRiskDial.value = String(Math.round(profile.value));
+  if (els.settingPositionSize) els.settingPositionSize.value = profile.positionSizePct.toFixed(1);
+  if (els.settingStopLoss) els.settingStopLoss.value = profile.stopLossPct.toFixed(1);
+  if (els.settingTargetGain) els.settingTargetGain.value = profile.targetGainPct.toFixed(1);
+  if (els.settingMinOpportunity) els.settingMinOpportunity.value = profile.minOpportunityScore.toFixed(0);
+  if (els.settingMinValuation) els.settingMinValuation.value = profile.minValuationScore.toFixed(0);
+  renderRiskToleranceDial(profile.value);
 }
 
 function clampNumber(value, min, max, fallback) {
@@ -551,9 +689,30 @@ function priceChangeClass(value) {
   return number > 0 ? "text-emerald-300" : "text-rose-300";
 }
 
-function loadPortfolio() {
-  const defaults = { available: 10000, invested: 0, positions: [] };
-  const stored = localStorage.getItem("portfolio");
+function defaultPortfolio() {
+  return { available: 10000, invested: 0, positions: [] };
+}
+
+function portfolioStorageKey(user = currentUser) {
+  const userKey = user?.id ?? user?.username;
+  return userKey ? `investment-console-portfolio:${userKey}` : null;
+}
+
+function migrateLegacyPortfolio(user = currentUser) {
+  const key = portfolioStorageKey(user);
+  if (!key || localStorage.getItem(key)) return;
+  const legacy = localStorage.getItem("portfolio");
+  if (!legacy) return;
+  localStorage.setItem(key, legacy);
+  localStorage.removeItem("portfolio");
+}
+
+function loadPortfolio(user = currentUser) {
+  const defaults = defaultPortfolio();
+  const key = portfolioStorageKey(user);
+  if (!key) return defaults;
+  migrateLegacyPortfolio(user);
+  const stored = localStorage.getItem(key);
   if (stored) {
     try {
       return normalizePortfolio(JSON.parse(stored));
@@ -623,7 +782,9 @@ function normalizePortfolio(portfolio) {
 }
 
 function savePortfolioState(portfolio) {
-  localStorage.setItem("portfolio", JSON.stringify(normalizePortfolio(portfolio)));
+  const key = portfolioStorageKey();
+  if (!key) return;
+  localStorage.setItem(key, JSON.stringify(normalizePortfolio(portfolio)));
 }
 
 function updatePortfolioUI(portfolio) {
@@ -632,6 +793,7 @@ function updatePortfolioUI(portfolio) {
   els.investedAmount.value = Number(calculateInvested(portfolioState)).toFixed(2);
   renderPortfolioSummary(portfolioState);
   renderHoldings(portfolioState);
+  renderPositionsPage();
 }
 
 function renderPortfolioSummary(portfolio) {
@@ -661,6 +823,150 @@ function renderPortfolioSummary(portfolio) {
     `)
     .join("");
   refreshIcons();
+}
+
+function latestMarketForPosition(ticker) {
+  return positionMarketCache[normalizeTicker(ticker)] || null;
+}
+
+async function loadPositionMarketData() {
+  if (!isAuthenticated()) return;
+  const tickers = portfolioTickers().filter((ticker) => !positionMarketCache[ticker]);
+  if (!tickers.length) return;
+  await Promise.all(tickers.map(async (ticker) => {
+    try {
+      const res = await apiFetch(`/history/${encodeURIComponent(ticker)}`);
+      if (!res.ok) return;
+      const history = await res.json();
+      const latest = [...history]
+        .filter((entry) => entry.current_price !== null && entry.current_price !== undefined)
+        .sort((a, b) => new Date(b.report_time || b.created_at) - new Date(a.report_time || a.created_at))[0];
+      positionMarketCache[ticker] = latest || { ticker };
+    } catch (e) {
+      positionMarketCache[ticker] = { ticker };
+    }
+  }));
+  renderPositionsPage();
+}
+
+function renderPositionsPage() {
+  if (!els.positionsList || !els.positionsSummary) return;
+  const positions = portfolioPositions();
+  if (els.positionsCount) {
+    els.positionsCount.textContent = `${positions.length} position${positions.length === 1 ? "" : "s"}`;
+  }
+  if (!positions.length) {
+    els.positionsSummary.innerHTML = [
+      positionSummaryCard("Tracked Cost", money(0), "No holdings yet", "briefcase-business", "text-cyan-300"),
+      positionSummaryCard("Market Value", "N/A", "Run analysis to capture prices", "line-chart", "text-slate-300"),
+      positionSummaryCard("Unrealized P/L", "N/A", "Waiting for market values", "activity", "text-slate-300"),
+    ].join("");
+    els.positionsList.innerHTML = `
+      <div class="p-8 text-center text-sm text-slate-500">
+        ${icon("briefcase-business", "mx-auto mb-3 h-6 w-6 text-slate-600")}
+        No positions tracked yet. Add holdings from Financial Settings or plan a buy trade from a recommendation.
+      </div>
+    `;
+    refreshIcons();
+    return;
+  }
+
+  const rows = positions.map(positionViewModel);
+  const costBasis = rows.reduce((sum, row) => sum + row.costBasis, 0);
+  const marketKnown = rows.filter((row) => row.marketValue !== null);
+  const marketValue = marketKnown.reduce((sum, row) => sum + row.marketValue, 0);
+  const gainLoss = marketKnown.length ? marketValue - marketKnown.reduce((sum, row) => sum + row.costBasis, 0) : null;
+  const gainLossPct = gainLoss !== null && costBasis > 0 ? gainLoss / costBasis : null;
+
+  els.positionsSummary.innerHTML = [
+    positionSummaryCard("Tracked Cost", money(costBasis), `${positions.length} holdings`, "briefcase-business", "text-cyan-300"),
+    positionSummaryCard("Market Value", marketKnown.length ? money(marketValue) : "N/A", marketKnown.length ? `${marketKnown.length} priced from history` : "Run analysis to capture prices", "line-chart", "text-emerald-300"),
+    positionSummaryCard("Unrealized P/L", gainLoss === null ? "N/A" : money(gainLoss), gainLossPct === null ? "Waiting for prices" : compactPercent(gainLossPct), gainLoss === null || gainLoss >= 0 ? "trending-up" : "trending-down", gainLoss === null ? "text-slate-300" : gainLoss >= 0 ? "text-emerald-300" : "text-rose-300"),
+  ].join("");
+
+  els.positionsList.innerHTML = rows.map(renderPositionRow).join("");
+  els.positionsList.querySelectorAll(".position-analyze").forEach((button) => {
+    button.addEventListener("click", async () => {
+      setActiveView("dashboard");
+      await createAnalysis([button.dataset.ticker]);
+    });
+  });
+  els.positionsList.querySelectorAll(".position-remove").forEach((button) => {
+    button.addEventListener("click", () => removePortfolioPosition(button.dataset.ticker));
+  });
+  refreshIcons();
+}
+
+function positionSummaryCard(title, value, meta, iconName, accent) {
+  return `
+    <article class="rounded-md border border-slate-800 bg-slate-950/50 p-3">
+      <div class="flex items-center justify-between gap-2">
+        <span class="text-xs text-slate-500">${escapeHtml(title)}</span>
+        ${icon(iconName, `h-4 w-4 ${accent}`)}
+      </div>
+      <p class="mt-2 text-xl font-semibold text-white">${escapeHtml(value)}</p>
+      <p class="mt-1 text-xs text-slate-500">${escapeHtml(meta)}</p>
+    </article>
+  `;
+}
+
+function positionViewModel(position) {
+  const market = latestMarketForPosition(position.ticker);
+  const latestPrice = Number(market?.current_price);
+  const hasPrice = Number.isFinite(latestPrice) && latestPrice > 0;
+  const costBasis = position.shares * position.averageCost;
+  const marketValue = hasPrice ? position.shares * latestPrice : null;
+  const gainLoss = marketValue !== null ? marketValue - costBasis : null;
+  const gainLossPct = gainLoss !== null && costBasis > 0 ? gainLoss / costBasis : null;
+  return {
+    ...position,
+    costBasis,
+    latestPrice: hasPrice ? latestPrice : null,
+    marketValue,
+    gainLoss,
+    gainLossPct,
+    latestRating: market?.rating || null,
+    latestReason: market?.reason || "",
+    lastAnalyzed: market?.report_time || market?.created_at || null,
+  };
+}
+
+function renderPositionRow(row) {
+  const totalBasis = calculateInvested(portfolioState);
+  const allocation = totalBasis > 0 ? row.costBasis / totalBasis : 0;
+  const gainClass = row.gainLoss === null || row.gainLoss === 0 ? "text-slate-200" : row.gainLoss > 0 ? "text-emerald-300" : "text-rose-300";
+  return `
+    <article class="grid gap-3 px-4 py-4 lg:grid-cols-[minmax(0,1fr)_260px_220px_auto] lg:items-center">
+      <div class="min-w-0">
+        <div class="flex flex-wrap items-center gap-2">
+          <a href="https://finance.yahoo.com/quote/${encodeURIComponent(row.ticker)}" target="_blank" class="text-base font-semibold text-cyan-200 hover:text-cyan-100">${escapeHtml(row.ticker)}</a>
+          ${row.latestRating ? ratingBadge(row.latestRating) : `<span class="rounded-full border border-slate-700 bg-slate-900 px-2.5 py-1 text-xs font-semibold text-slate-300">not analyzed</span>`}
+        </div>
+        <p class="mt-1 text-xs text-slate-500">${escapeHtml(row.latestReason ? shortReason(row.latestReason) : "No recommendation history captured yet.")}</p>
+        <p class="mt-2 text-xs text-slate-600">${row.lastAnalyzed ? `Last analyzed ${formatDateTime(row.lastAnalyzed)}` : "Analyze this position to capture latest market context."}</p>
+      </div>
+      <div class="grid grid-cols-2 gap-2 text-xs">
+        <div class="rounded-md bg-slate-950/60 p-2"><span class="block text-slate-500">Shares</span>${row.shares.toLocaleString(undefined, { maximumFractionDigits: 4 })}</div>
+        <div class="rounded-md bg-slate-950/60 p-2"><span class="block text-slate-500">Avg Cost</span>${escapeHtml(money(row.averageCost))}</div>
+        <div class="rounded-md bg-slate-950/60 p-2"><span class="block text-slate-500">Cost Basis</span>${escapeHtml(money(row.costBasis))}</div>
+        <div class="rounded-md bg-slate-950/60 p-2"><span class="block text-slate-500">Allocation</span>${escapeHtml(compactPercent(allocation))}</div>
+      </div>
+      <div class="grid grid-cols-2 gap-2 text-xs">
+        <div class="rounded-md bg-slate-950/60 p-2"><span class="block text-slate-500">Latest Price</span>${escapeHtml(row.latestPrice === null ? "N/A" : money(row.latestPrice))}</div>
+        <div class="rounded-md bg-slate-950/60 p-2"><span class="block text-slate-500">Market Value</span>${escapeHtml(row.marketValue === null ? "N/A" : money(row.marketValue))}</div>
+        <div class="col-span-2 rounded-md bg-slate-950/60 p-2"><span class="block text-slate-500">Unrealized P/L</span><span class="${gainClass}">${escapeHtml(row.gainLoss === null ? "N/A" : `${money(row.gainLoss)} (${compactPercent(row.gainLossPct)})`)}</span></div>
+      </div>
+      <div class="flex flex-wrap justify-start gap-2 lg:justify-end">
+        <button data-ticker="${escapeHtml(row.ticker)}" class="position-analyze inline-flex items-center gap-2 rounded-md bg-cyan-500 px-3 py-2 text-xs font-semibold text-slate-950 hover:bg-cyan-400">
+          ${icon("activity", "h-4 w-4")}
+          Analyze
+        </button>
+        <button data-ticker="${escapeHtml(row.ticker)}" class="position-remove inline-flex h-9 w-9 items-center justify-center rounded-md border border-slate-700 text-slate-300 hover:border-red-400/40 hover:bg-red-500/10 hover:text-red-200" title="Remove position">
+          ${icon("trash-2", "h-4 w-4")}
+        </button>
+      </div>
+    </article>
+  `;
 }
 
 function findPortfolioPosition(ticker) {
@@ -1082,6 +1388,7 @@ async function saveAgentConfig() {
 }
 
 async function refresh(options = {}) {
+  if (!isAuthenticated()) return [];
   try {
     if (options.spinRefresh) setButtonLoading(els.refreshBtn, true);
     if (options.spinCandidates) setButtonLoading(els.refreshCandidates, true, "Refreshing");
@@ -1091,6 +1398,7 @@ async function refresh(options = {}) {
     candidateUniverseCache = Array.isArray(candidates) ? candidates : [];
     renderStats(analyses);
     renderAnalyses(analyses);
+    renderAnalysisHistory(analyses);
     renderCandidateUniverse(candidates);
     els.lastRefresh.textContent = `Updated ${formatDateTime(new Date())}`;
     setApiStatus("online", "Online");
@@ -1161,33 +1469,154 @@ function renderCandidateRow(candidate) {
 }
 
 function renderStats(analyses) {
-  const total = analyses.length;
-  const running = analyses.filter((a) => a.status === "running").length;
-  const completed = analyses.filter((a) => a.status === "completed").length;
-  const failed = analyses.filter((a) => a.status === "failed").length;
-  const stats = [
-    { title: "Total Runs", value: total, icon: "bar-chart-3", accent: "text-cyan-300" },
-    { title: "Running", value: running, icon: "loader-circle", accent: "text-amber-300" },
-    { title: "Completed", value: completed, icon: "check-circle-2", accent: "text-emerald-300", meta: failed ? `${failed} failed` : "No failures" },
+  const completedRuns = analyses.filter((analysis) => analysis.status === "completed");
+  const latestCompleted = [...completedRuns].sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0];
+  const latestCounts = recommendationActionCounts(latestCompleted?.recommendation || "");
+  const running = analyses.filter((analysis) => analysis.status === "running").length;
+  const failed = analyses.filter((analysis) => analysis.status === "failed").length;
+  const trendRuns = completedRuns
+    .filter((analysis) => analysis.recommendation)
+    .sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
+    .slice(-8);
+  const actionCards = [
+    { title: "Buy Actions", value: latestCounts.buy, meta: latestCounts.buy ? "Candidates to review for entry" : "No new buys in latest run", icon: "shopping-cart", tone: "border-emerald-400/25 bg-emerald-950/20 text-emerald-200" },
+    { title: "Sell / Exit", value: latestCounts.sell, meta: latestCounts.sell ? "Positions needing exit review" : "No active sell actions", icon: "badge-alert", tone: "border-red-400/25 bg-red-950/20 text-red-200" },
+    { title: "Hold / Watch", value: latestCounts.hold + latestCounts.neutral, meta: `${latestCounts.hold} hold, ${latestCounts.neutral} neutral`, icon: "eye", tone: "border-amber-400/25 bg-amber-950/20 text-amber-200" },
   ];
 
-  els.statsContainer.innerHTML = stats
-    .map(
-      (stat) => `
-        <article class="panel rounded-lg p-4">
-          <div class="flex items-center justify-between">
-            <span class="text-sm text-slate-400">${stat.title}</span>
-            ${icon(stat.icon, `h-5 w-5 ${stat.accent}`)}
+  els.statsContainer.innerHTML = `
+    <section class="col-span-full grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,0.9fr)_minmax(360px,1.1fr)]">
+      <div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        ${actionCards.map(renderActionStatCard).join("")}
+      </div>
+      <article class="panel rounded-lg p-4">
+        <div class="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 class="text-sm font-semibold text-white">Market Action Trend</h3>
+            <p class="mt-1 text-xs text-slate-500">${trendRuns.length ? "Recommendation mix across recent completed analyses, colored by saved risk tolerance." : "Run more analyses to build the trend."}</p>
           </div>
-          <div class="mt-3 flex items-end justify-between gap-3">
-            <p class="text-3xl font-semibold text-white">${stat.value}</p>
-            ${stat.meta ? `<p class="pb-1 text-xs text-slate-500">${stat.meta}</p>` : ""}
+          <div class="flex items-center gap-3 text-[11px] text-slate-400">
+            <span class="inline-flex items-center gap-1"><span class="h-2 w-2 rounded-full bg-emerald-300"></span>Buy</span>
+            <span class="inline-flex items-center gap-1"><span class="h-2 w-2 rounded-full bg-red-300"></span>Sell</span>
+            <span class="inline-flex items-center gap-1"><span class="h-2 w-2 rounded-full bg-amber-300"></span>Hold</span>
+            <span class="inline-flex items-center gap-1"><span class="h-2 w-2 rounded-full border border-cyan-300"></span>Risk</span>
           </div>
-        </article>
-      `
-    )
-    .join("");
+        </div>
+        ${renderActionTrendChart(trendRuns)}
+        <div class="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-slate-800 pt-3 text-xs text-slate-500">
+          <span>${analyses.length} total runs</span>
+          <span>${running} running</span>
+          <span>${completedRuns.length} completed</span>
+          <span>${failed} failed</span>
+        </div>
+      </article>
+    </section>
+  `;
   refreshIcons();
+}
+
+function renderActionStatCard(card) {
+  return `
+    <article class="panel rounded-lg p-4">
+      <div class="flex items-start justify-between gap-3">
+        <span class="text-sm text-slate-400">${escapeHtml(card.title)}</span>
+        <span class="rounded-md border p-2 ${card.tone}">${icon(card.icon, "h-4 w-4")}</span>
+      </div>
+      <div class="mt-5">
+        <p class="text-4xl font-semibold text-white">${card.value}</p>
+        <p class="mt-2 text-xs leading-5 text-slate-500">${escapeHtml(card.meta)}</p>
+      </div>
+    </article>
+  `;
+}
+
+function recommendationActionCounts(recommendation) {
+  const counts = { buy: 0, sell: 0, hold: 0, neutral: 0 };
+  String(recommendation || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .forEach((item) => {
+      const rating = String(item.split(":")[1] || item).trim().toLowerCase();
+      if (rating.includes("buy")) counts.buy += 1;
+      else if (rating.includes("sell")) counts.sell += 1;
+      else if (rating.includes("hold")) counts.hold += 1;
+      else counts.neutral += 1;
+    });
+  return counts;
+}
+
+function renderActionTrendChart(runs) {
+  if (!runs.length) {
+    return `
+      <div class="mt-4 flex h-36 items-center justify-center rounded-md border border-slate-800 bg-slate-950/40 text-sm text-slate-500">
+        No completed recommendation history yet.
+      </div>
+    `;
+  }
+  const points = runs.map((analysis) => ({
+    label: formatDateTime(analysis.created_at),
+    risk: analysis.risk_tolerance || analysisRiskSettings(analysis).riskTolerance,
+    riskDial: analysis.risk_tolerance_dial ?? analysisRiskSettings(analysis).riskToleranceDial,
+    counts: recommendationActionCounts(analysis.recommendation),
+  }));
+  const maxCount = Math.max(1, ...points.map((point) => point.counts.buy + point.counts.sell + point.counts.hold + point.counts.neutral));
+  const width = 420;
+  const height = 150;
+  const chartTop = 18;
+  const chartBottom = 122;
+  const barWidth = Math.min(30, Math.max(16, Math.floor(250 / points.length)));
+  const gap = points.length > 1 ? (width - 56 - barWidth * points.length) / (points.length - 1) : 0;
+  const barGroups = points.map((point, index) => renderActionTrendBar(point, index, { barWidth, chartTop, chartBottom, gap, maxCount })).join("");
+  return `
+    <div class="mt-4 overflow-hidden rounded-md border border-slate-800 bg-slate-950/40 p-2">
+      <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Historical recommendation action mix" class="h-40 w-full">
+        <line x1="20" y1="${chartBottom}" x2="${width - 18}" y2="${chartBottom}" stroke="#334155" stroke-width="1" />
+        <line x1="20" y1="${chartTop}" x2="${width - 18}" y2="${chartTop}" stroke="#1e293b" stroke-width="1" stroke-dasharray="4 4" />
+        ${barGroups}
+      </svg>
+    </div>
+  `;
+}
+
+function renderActionTrendBar(point, index, options) {
+  const { barWidth, chartTop, chartBottom, gap, maxCount } = options;
+  const x = 28 + index * (barWidth + gap);
+  const scale = (chartBottom - chartTop) / maxCount;
+  const neutralHeight = point.counts.neutral * scale;
+  const holdHeight = point.counts.hold * scale;
+  const sellHeight = point.counts.sell * scale;
+  const buyHeight = point.counts.buy * scale;
+  let y = chartBottom;
+  const neutralRect = svgRect(x, y - neutralHeight, barWidth, neutralHeight, "#64748b", 0.35);
+  y -= neutralHeight;
+  const holdRect = svgRect(x, y - holdHeight, barWidth, holdHeight, "#fbbf24", 0.82);
+  y -= holdHeight;
+  const sellRect = svgRect(x, y - sellHeight, barWidth, sellHeight, "#f87171", 0.86);
+  y -= sellHeight;
+  const buyRect = svgRect(x, y - buyHeight, barWidth, buyHeight, "#34d399", 0.9);
+  const total = point.counts.buy + point.counts.sell + point.counts.hold + point.counts.neutral;
+  const riskColor = riskToleranceColor(point.risk);
+  return `
+    <g>
+      <title>${escapeHtml(point.label)}: ${point.counts.buy} buy, ${point.counts.sell} sell, ${point.counts.hold} hold, ${point.counts.neutral} neutral. Risk tolerance ${escapeHtml(riskToleranceLabel(point.risk))}${point.riskDial !== undefined && point.riskDial !== null ? ` ${escapeHtml(Math.round(Number(point.riskDial)).toString())}` : ""}</title>
+      ${neutralRect}${holdRect}${sellRect}${buyRect}
+      <circle cx="${(x + barWidth / 2).toFixed(2)}" cy="10" r="4" fill="${riskColor}" />
+      <text x="${x + barWidth / 2}" y="142" text-anchor="middle" fill="#64748b" font-size="10">${total}</text>
+    </g>
+  `;
+}
+
+function riskToleranceColor(value) {
+  const normalized = String(value || "balanced").toLowerCase();
+  if (normalized === "conservative") return "#34d399";
+  if (normalized === "aggressive") return "#f59e0b";
+  return "#22d3ee";
+}
+
+function svgRect(x, y, width, height, color, opacity) {
+  if (!Number.isFinite(height) || height <= 0.2) return "";
+  return `<rect x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${width.toFixed(2)}" height="${height.toFixed(2)}" rx="3" fill="${color}" opacity="${opacity}" />`;
 }
 
 function statusBadge(status) {
@@ -1224,8 +1653,8 @@ function renderAnalyses(analyses) {
     return;
   }
 
-  analyses.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-  analyses.forEach((analysis) => {
+  const sortedAnalyses = [...analyses].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+  sortedAnalyses.slice(0, 5).forEach((analysis) => {
     const card = document.createElement("button");
     const selected = analysis.id === selectedAnalysisId;
     card.type = "button";
@@ -1259,7 +1688,111 @@ function renderAnalyses(analyses) {
     });
     els.analysesList.appendChild(card);
   });
+  if (sortedAnalyses.length > 5) {
+    const historyButton = document.createElement("button");
+    historyButton.type = "button";
+    historyButton.className = "w-full rounded-md border border-slate-800 bg-slate-950/40 px-3 py-2 text-sm font-semibold text-cyan-200 hover:border-cyan-400/30 hover:bg-cyan-400/10";
+    historyButton.innerHTML = `View all ${sortedAnalyses.length} analyses`;
+    historyButton.addEventListener("click", () => setActiveView("history"));
+    els.analysesList.appendChild(historyButton);
+  }
   refreshIcons();
+}
+
+function renderAnalysisHistory(analyses) {
+  if (!els.historyList) return;
+  const query = String(els.historySearch?.value || "").trim().toLowerCase();
+  const statusFilter = els.historyStatusFilter?.value || "all";
+  const actionFilter = els.historyActionFilter?.value || "all";
+  const sorted = [...(analyses || [])].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+  const filtered = sorted.filter((analysis) => {
+    const status = String(analysis.status || "pending").toLowerCase();
+    const counts = recommendationActionCounts(analysis.recommendation || "");
+    const searchable = `${analysis.tickers || ""} ${analysis.recommendation || ""} ${status}`.toLowerCase();
+    const matchesQuery = !query || searchable.includes(query);
+    const matchesStatus = statusFilter === "all" || status === statusFilter;
+    const matchesAction = actionFilter === "all" || counts[actionFilter] > 0;
+    return matchesQuery && matchesStatus && matchesAction;
+  });
+
+  if (!filtered.length) {
+    els.historyList.innerHTML = `
+      <div class="p-8 text-center text-sm text-slate-500">
+        ${icon("search-x", "mx-auto mb-3 h-6 w-6 text-slate-600")}
+        No analyses match the current filters.
+      </div>
+    `;
+    refreshIcons();
+    return;
+  }
+
+  els.historyList.innerHTML = filtered.map(renderAnalysisHistoryRow).join("");
+  els.historyList.querySelectorAll(".history-open-analysis").forEach((button) => {
+    button.addEventListener("click", () => selectAnalysis(button.dataset.id));
+  });
+  els.historyList.querySelectorAll(".history-delete-analysis").forEach((button) => {
+    button.addEventListener("click", () => deleteAnalysis(button.dataset.id));
+  });
+  refreshIcons();
+}
+
+function renderAnalysisHistoryRow(analysis) {
+  const counts = recommendationActionCounts(analysis.recommendation || "");
+  const selected = analysis.id === selectedAnalysisId;
+  return `
+    <article class="grid gap-3 px-4 py-4 transition ${selected ? "bg-cyan-400/5" : "hover:bg-slate-900/40"} lg:grid-cols-[minmax(0,1.3fr)_180px_220px_auto] lg:items-center">
+      <div class="min-w-0">
+        <div class="flex flex-wrap items-center gap-2">
+          <h4 class="truncate text-sm font-semibold text-white">${escapeHtml(analysis.tickers || "Untitled analysis")}</h4>
+          ${statusBadge(analysis.status)}
+        </div>
+        <p class="mt-1 text-xs text-slate-500">${formatDateTime(analysis.created_at)} · ${timeAgo(analysis.created_at)}</p>
+        ${renderHistoryRiskPill(analysis)}
+        <p class="mt-2 line-clamp-2 text-xs leading-5 text-slate-400">${escapeHtml(analysis.recommendation || "Pending recommendation")}</p>
+      </div>
+      <div class="grid grid-cols-4 gap-2 text-center text-xs">
+        ${historyCountPill("Buy", counts.buy, "text-emerald-200 border-emerald-400/20 bg-emerald-400/10")}
+        ${historyCountPill("Sell", counts.sell, "text-red-200 border-red-400/20 bg-red-400/10")}
+        ${historyCountPill("Hold", counts.hold, "text-amber-200 border-amber-400/20 bg-amber-400/10")}
+        ${historyCountPill("Neutral", counts.neutral, "text-slate-200 border-slate-400/20 bg-slate-400/10")}
+      </div>
+      <div class="text-xs text-slate-500">
+        <div>${escapeHtml((analysis.id || "").slice(0, 8))}</div>
+        <div class="mt-1">${escapeHtml(analysis.updated_at ? `Updated ${formatDateTime(analysis.updated_at)}` : "No update time")}</div>
+      </div>
+      <div class="flex flex-wrap justify-start gap-2 lg:justify-end">
+        <button data-id="${escapeHtml(analysis.id)}" class="history-open-analysis inline-flex items-center gap-2 rounded-md bg-cyan-500 px-3 py-2 text-xs font-semibold text-slate-950 hover:bg-cyan-400">
+          ${icon("file-search", "h-4 w-4")}
+          Open
+        </button>
+        <button data-id="${escapeHtml(analysis.id)}" class="history-delete-analysis inline-flex h-9 w-9 items-center justify-center rounded-md border border-slate-700 text-slate-300 hover:border-red-400/40 hover:bg-red-500/10 hover:text-red-200" title="Delete analysis">
+          ${icon("trash-2", "h-4 w-4")}
+        </button>
+      </div>
+    </article>
+  `;
+}
+
+function renderHistoryRiskPill(analysis) {
+  const settings = analysisRiskSettings(analysis);
+  const risk = analysis.risk_tolerance || settings.riskTolerance;
+  if (!risk) return "";
+  const dial = analysis.risk_tolerance_dial ?? settings.riskToleranceDial;
+  return `
+    <span class="mt-2 inline-flex items-center gap-1 rounded-full border border-slate-700 bg-slate-950/70 px-2 py-0.5 text-[11px] text-slate-300">
+      <span class="h-2 w-2 rounded-full" style="background:${riskToleranceColor(risk)}"></span>
+      ${escapeHtml(riskToleranceLabel(risk))}${dial !== undefined && dial !== null ? ` ${escapeHtml(Math.round(Number(dial)).toString())}` : ""}
+    </span>
+  `;
+}
+
+function historyCountPill(label, value, classes) {
+  return `
+    <div class="rounded-md border px-2 py-1 ${classes}">
+      <span class="block font-semibold">${value}</span>
+      <span class="text-[10px] opacity-80">${label}</span>
+    </div>
+  `;
 }
 
 function setReportLoading(message) {
@@ -1304,9 +1837,11 @@ function statusBadgeClass(status) {
 
 async function selectAnalysis(id) {
   selectedAnalysisId = id;
+  if (activeView === "history") setActiveView("dashboard");
   const analysis = analysesCache.find((item) => item.id === id);
   if (analysis) updateSelectedStatus(analysis);
   renderAnalyses(analysesCache);
+  renderAnalysisHistory(analysesCache);
   setReportLoading("Loading report...");
   els.logsConsole.innerHTML = "";
 
@@ -1333,6 +1868,7 @@ async function selectAnalysis(id) {
 }
 
 function openLogSocket(id) {
+  if (!isAuthenticated()) return;
   const wsBase = API_BASE.replace(/^http/, "ws");
   const socket = new WebSocket(`${wsBase}/ws/${id}?token=${encodeURIComponent(authToken())}`);
   socket.onopen = () => appendLog("Live log stream connected.");
@@ -1363,6 +1899,7 @@ async function displayReport(analysisId) {
     summaryText = parsedReport.summary || stripJsonFromReport(summaryText);
     recs = Array.isArray(parsedReport.recommendations) ? parsedReport.recommendations : [];
   }
+  analysis.analysis_settings = analysis.analysis_settings || parsedReport?.analysis_settings || {};
   if (!recs.length && analysis.recommendation) {
     recs = analysis.recommendation.split(",").map((item) => {
       const parts = item.trim().split(":");
@@ -1372,7 +1909,7 @@ async function displayReport(analysisId) {
   recs = ensureRequestedTickerCards(recs, analysis);
 
   els.reportSummary.innerHTML = summaryText
-    ? `<p class="whitespace-pre-wrap">${escapeHtml(summaryText)}</p>`
+    ? `${renderAnalysisPreferenceSnapshot(analysis)}<p class="mt-3 whitespace-pre-wrap">${escapeHtml(summaryText)}</p>`
     : `<p class="text-slate-500">${analysis.status === "running" ? "Report is being prepared." : "No summary available."}</p>`;
   renderRecommendations(recs);
   await refresh();
@@ -1403,6 +1940,32 @@ function ensureRequestedTickerCards(recs, analysis) {
   });
 
   return rows;
+}
+
+function analysisRiskSettings(analysis) {
+  return analysis?.analysis_settings || {};
+}
+
+function riskToleranceLabel(value) {
+  const normalized = String(value || "balanced").toLowerCase();
+  if (normalized === "conservative") return "Conservative";
+  if (normalized === "aggressive") return "Aggressive";
+  return "Balanced";
+}
+
+function renderAnalysisPreferenceSnapshot(analysis) {
+  const settings = analysisRiskSettings(analysis);
+  const risk = settings.riskTolerance || analysis?.risk_tolerance;
+  if (!risk) return "";
+  const dial = settings.riskToleranceDial ?? analysis?.risk_tolerance_dial;
+  return `
+    <div class="mb-3 flex flex-wrap items-center gap-2 rounded-md border border-cyan-400/20 bg-cyan-400/10 px-3 py-2 text-xs text-cyan-100">
+      ${icon("sliders-horizontal", "h-4 w-4")}
+      <span class="font-semibold">Risk tolerance: ${escapeHtml(riskToleranceLabel(risk))}${dial !== undefined && dial !== null ? ` (${escapeHtml(Math.round(Number(dial)).toString())})` : ""}</span>
+      ${settings.minOpportunityScore !== undefined ? `<span class="text-cyan-200/80">Buy threshold ${escapeHtml(Number(settings.minOpportunityScore).toFixed(0))}</span>` : ""}
+      ${settings.minValuationScore !== undefined ? `<span class="text-cyan-200/80">Value threshold ${escapeHtml(Number(settings.minValuationScore).toFixed(0))}</span>` : ""}
+    </div>
+  `;
 }
 
 function parseReportPayload(text) {
@@ -2012,7 +2575,7 @@ async function createAnalysis(tickers, options = {}) {
     }
     const res = await apiFetch("/analyses", {
       method: "POST",
-      body: JSON.stringify({ tickers: requestTickers }),
+      body: JSON.stringify({ tickers: requestTickers, analysis_settings: analysisSettings }),
     });
     if (!res.ok) throw new Error("Analysis request failed");
     const data = await res.json();
@@ -2202,6 +2765,8 @@ function wireEvents() {
   els.loginForm?.addEventListener("submit", handleLogin);
   els.logoutBtn?.addEventListener("click", logout);
   els.dashboardNavBtn?.addEventListener("click", () => setActiveView("dashboard"));
+  els.positionsNavBtn?.addEventListener("click", () => setActiveView("positions"));
+  els.historyNavBtn?.addEventListener("click", () => setActiveView("history"));
   els.settingsNavBtn?.addEventListener("click", () => setActiveView("settings"));
   els.agentsNavBtn?.addEventListener("click", () => setActiveView("agents"));
   els.usersNavBtn?.addEventListener("click", () => setActiveView("users"));
@@ -2223,6 +2788,20 @@ function wireEvents() {
   els.refreshUsers?.addEventListener("click", loadUsers);
   els.userCreateForm?.addEventListener("submit", createUser);
   els.accountForm?.addEventListener("submit", saveAccount);
+  els.settingRiskDial?.addEventListener("input", () => applyRiskToleranceDial(els.settingRiskDial.value));
+  els.historySearch?.addEventListener("input", () => renderAnalysisHistory(analysesCache));
+  els.historyStatusFilter?.addEventListener("change", () => renderAnalysisHistory(analysesCache));
+  els.historyActionFilter?.addEventListener("change", () => renderAnalysisHistory(analysesCache));
+  els.positionsAnalyze?.addEventListener("click", async () => {
+    const tickers = portfolioTickers();
+    if (!tickers.length) {
+      showToast("Add at least one position before running analysis.", "error");
+      return;
+    }
+    setActiveView("dashboard");
+    await createAnalysis(tickers);
+  });
+  els.positionsAddLink?.addEventListener("click", () => setActiveView("settings"));
   els.clearLogs.addEventListener("click", () => {
     els.logsConsole.innerHTML = "";
     appendLog("Logs cleared locally.");
@@ -2304,7 +2883,12 @@ async function startApp() {
   } catch (e) {
     setEmptyReport("Backend is unavailable.");
   }
-  setInterval(async () => {
+  if (refreshTimerId) clearInterval(refreshTimerId);
+  refreshTimerId = setInterval(async () => {
+    if (!isAuthenticated()) {
+      stopAppSession();
+      return;
+    }
     try {
       await refresh();
       if (selectedAnalysisId) {
