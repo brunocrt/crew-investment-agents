@@ -14,12 +14,27 @@ the function returns ``None``.
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 import yfinance as yf
 
 
-def get_stock_price_info(ticker: str, window_days: int = 30) -> Optional[Dict[str, float]]:
+def _safe_float(value: Any) -> Optional[float]:
+    try:
+        number = float(value)
+        return number if number == number else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_yield(value: Any) -> Optional[float]:
+    number = _safe_float(value)
+    if number is None or number < 0:
+        return None
+    return number / 100 if number > 0.20 else number
+
+
+def get_stock_price_info(ticker: str, window_days: int = 30) -> Optional[Dict[str, Any]]:
     """
     Retrieve current closing price and percent change over a recent window.
 
@@ -42,7 +57,8 @@ def get_stock_price_info(ticker: str, window_days: int = 30) -> Optional[Dict[st
     try:
         # Fetch enough data to locate the trading close nearest to the
         # calendar lookback date, accounting for weekends and market holidays.
-        hist = yf.Ticker(ticker).history(period=f"{window_days + 20}d")
+        instrument = yf.Ticker(ticker)
+        hist = instrument.history(period=f"{window_days + 20}d")
         if hist.empty or 'Close' not in hist.columns:
             return None
         hist = hist.dropna(subset=['Close'])
@@ -62,7 +78,13 @@ def get_stock_price_info(ticker: str, window_days: int = 30) -> Optional[Dict[st
             percent_change = None
         else:
             percent_change = (current_price - past_price) / past_price
-        return {
+        info = instrument.info or {}
+        dividend_yield = (
+            _normalize_yield(info.get("dividendYield"))
+            or _normalize_yield(info.get("trailingAnnualDividendYield"))
+            or _normalize_yield(info.get("fiveYearAvgDividendYield"))
+        )
+        payload = {
             'current_price': current_price,
             'past_price': past_price,
             'percent_change': percent_change,
@@ -70,5 +92,11 @@ def get_stock_price_info(ticker: str, window_days: int = 30) -> Optional[Dict[st
             'price_change_end_date': latest_date.date().isoformat(),
             'price_change_window_days': window_days,
         }
+        if dividend_yield is not None:
+            payload['dividend_yield'] = dividend_yield
+            annual_rate = _safe_float(info.get("trailingAnnualDividendRate")) or _safe_float(info.get("dividendRate"))
+            if annual_rate is not None:
+                payload['annual_dividend_rate'] = annual_rate
+        return payload
     except Exception:
         return None

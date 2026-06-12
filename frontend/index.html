@@ -92,6 +92,72 @@
         animation: spin 0.75s linear infinite;
       }
 
+      .active-dot {
+        animation: pulse-dot 1.15s ease-in-out infinite;
+        box-shadow: 0 0 0 0 rgba(34, 211, 238, 0.42);
+      }
+
+      .work-surface {
+        position: relative;
+        overflow: hidden;
+      }
+
+      .work-surface::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        background: linear-gradient(110deg, transparent 0%, rgba(34, 211, 238, 0.12) 42%, transparent 78%);
+        transform: translateX(-120%);
+      }
+
+      .work-surface.is-working {
+        border-color: rgba(34, 211, 238, 0.42);
+        box-shadow: 0 0 0 1px rgba(34, 211, 238, 0.16), 0 18px 44px rgba(8, 145, 178, 0.12);
+      }
+
+      .work-surface.is-working::after {
+        animation: scan-surface 1.8s ease-in-out infinite;
+      }
+
+      .working-button {
+        position: relative;
+        overflow: hidden;
+      }
+
+      .working-button::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        background: linear-gradient(110deg, transparent 0%, rgba(255, 255, 255, 0.28) 44%, transparent 76%);
+        transform: translateX(-120%);
+        animation: scan-surface 1.3s ease-in-out infinite;
+      }
+
+      .logs-working {
+        background:
+          linear-gradient(180deg, rgba(8, 47, 73, 0.16), rgba(15, 23, 42, 0.08)),
+          rgba(2, 6, 23, 0.82);
+      }
+
+      .positions-workspace {
+        position: relative;
+        border: 1px solid rgba(20, 184, 166, 0.18);
+        background:
+          linear-gradient(180deg, rgba(20, 83, 45, 0.12), rgba(15, 23, 42, 0.22)),
+          rgba(6, 20, 18, 0.42);
+        box-shadow: inset 0 1px 0 rgba(45, 212, 191, 0.08);
+      }
+
+      .positions-workspace::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        background: linear-gradient(135deg, rgba(45, 212, 191, 0.08), transparent 34%);
+      }
+
       @media (min-width: 1024px) {
         body.sidebar-collapsed #sidebar {
           width: 76px;
@@ -113,6 +179,26 @@
       @keyframes spin {
         to {
           transform: rotate(360deg);
+        }
+      }
+
+      @keyframes pulse-dot {
+        0%, 100% {
+          opacity: 0.65;
+          box-shadow: 0 0 0 0 rgba(34, 211, 238, 0.36);
+        }
+        50% {
+          opacity: 1;
+          box-shadow: 0 0 0 6px rgba(34, 211, 238, 0);
+        }
+      }
+
+      @keyframes scan-surface {
+        0% {
+          transform: translateX(-120%);
+        }
+        52%, 100% {
+          transform: translateX(120%);
         }
       }
     </style>
@@ -173,7 +259,7 @@
         </div>
 
         <div id="sidebar-content">
-          <div class="mt-5 rounded-md border border-slate-800 bg-slate-900/70 p-4 text-sm text-slate-300">
+          <div id="live-run-panel" class="work-surface mt-5 rounded-md border border-slate-800 bg-slate-900/70 p-4 text-sm text-slate-300">
             <div class="flex items-center gap-2 text-slate-100">
               <i data-lucide="activity" class="h-4 w-4 text-emerald-300"></i>
               Live Run State
@@ -314,7 +400,7 @@
         </div>
 
         <div id="positions-view" class="hidden">
-          <section class="mt-5 space-y-4">
+          <section class="positions-workspace mt-5 space-y-4 rounded-xl p-4">
             <section class="panel rounded-lg p-4">
               <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                 <div>
@@ -336,6 +422,17 @@
                 </div>
               </div>
               <div id="positions-summary" class="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3"></div>
+            </section>
+
+            <section class="panel rounded-lg">
+              <div class="border-b border-slate-800 px-4 py-3">
+                <div class="flex items-center gap-2">
+                  <i data-lucide="chart-no-axes-combined" class="h-4 w-4 text-emerald-300"></i>
+                  <h3 class="text-base font-semibold text-white">Position Performance</h3>
+                </div>
+                <p class="mt-1 text-xs text-slate-500">Compares tracked cost basis against latest analyzed market value.</p>
+              </div>
+              <div id="positions-performance-chart" class="p-4"></div>
             </section>
 
             <section class="panel rounded-lg">

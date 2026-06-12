@@ -52,6 +52,7 @@ const els = {
   holdingTicker: document.getElementById("holding-ticker"),
   investedAmount: document.getElementById("invested-amount"),
   lastRefresh: document.getElementById("last-refresh"),
+  liveRunPanel: document.getElementById("live-run-panel"),
   loginError: document.getElementById("login-error"),
   loginForm: document.getElementById("login-form"),
   loginPassword: document.getElementById("login-password"),
@@ -75,6 +76,7 @@ const els = {
   positionsCount: document.getElementById("positions-count"),
   positionsList: document.getElementById("positions-list"),
   positionsNavBtn: document.getElementById("positions-nav-btn"),
+  positionsPerformanceChart: document.getElementById("positions-performance-chart"),
   positionsSummary: document.getElementById("positions-summary"),
   positionsView: document.getElementById("positions-view"),
   portfolioSummary: document.getElementById("portfolio-summary"),
@@ -702,6 +704,12 @@ function compactPercent(value) {
   return `${(number * 100).toFixed(1)}%`;
 }
 
+function normalizedYield(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0) return null;
+  return number > 1 ? number / 100 : number;
+}
+
 function multiple(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) return "N/A";
@@ -899,6 +907,7 @@ function renderPositionsPage() {
         No positions tracked yet. Add holdings from Financial Settings or plan a buy trade from a recommendation.
       </div>
     `;
+    renderPositionPerformanceChart([]);
     refreshIcons();
     return;
   }
@@ -916,6 +925,7 @@ function renderPositionsPage() {
     positionSummaryCard("Unrealized P/L", gainLoss === null ? "N/A" : money(gainLoss), gainLossPct === null ? "Waiting for prices" : compactPercent(gainLossPct), gainLoss === null || gainLoss >= 0 ? "trending-up" : "trending-down", gainLoss === null ? "text-slate-300" : gainLoss >= 0 ? "text-emerald-300" : "text-rose-300"),
   ].join("");
 
+  renderPositionPerformanceChart(rows);
   els.positionsList.innerHTML = rows.map(renderPositionRow).join("");
   els.positionsList.querySelectorAll(".position-analyze").forEach((button) => {
     button.addEventListener("click", async () => {
@@ -927,6 +937,87 @@ function renderPositionsPage() {
     button.addEventListener("click", () => removePortfolioPosition(button.dataset.ticker));
   });
   refreshIcons();
+}
+
+function renderPositionPerformanceChart(rows) {
+  if (!els.positionsPerformanceChart) return;
+  const pricedRows = (rows || []).filter((row) => row.marketValue !== null && row.costBasis > 0);
+  if (!pricedRows.length) {
+    els.positionsPerformanceChart.innerHTML = `
+      <div class="rounded-md border border-slate-800 bg-slate-950/45 p-6 text-center text-sm text-slate-500">
+        ${icon("chart-no-axes-combined", "mx-auto mb-3 h-6 w-6 text-slate-600")}
+        Analyze your positions to capture latest prices and build the performance chart.
+      </div>
+    `;
+    refreshIcons();
+    return;
+  }
+
+  const chartRows = pricedRows
+    .map((row) => ({ ...row, performancePct: row.gainLossPct ?? 0 }))
+    .sort((a, b) => b.performancePct - a.performancePct)
+    .slice(0, 10);
+  const maxValue = Math.max(...chartRows.flatMap((row) => [row.costBasis, row.marketValue || 0]), 1);
+  const width = 760;
+  const rowHeight = 42;
+  const labelWidth = 78;
+  const valueWidth = 150;
+  const barWidth = width - labelWidth - valueWidth - 30;
+  const height = 34 + chartRows.length * rowHeight;
+  const totalCost = chartRows.reduce((sum, row) => sum + row.costBasis, 0);
+  const totalMarket = chartRows.reduce((sum, row) => sum + (row.marketValue || 0), 0);
+  const totalGain = totalMarket - totalCost;
+  const totalGainPct = totalCost > 0 ? totalGain / totalCost : 0;
+
+  const rowsSvg = chartRows.map((row, index) => {
+    const y = 26 + index * rowHeight;
+    const costWidth = Math.max(2, (row.costBasis / maxValue) * barWidth);
+    const marketWidth = Math.max(2, ((row.marketValue || 0) / maxValue) * barWidth);
+    const positive = Number(row.gainLoss || 0) >= 0;
+    const marketColor = positive ? "#34d399" : "#fb7185";
+    return `
+      <g>
+        <title>${escapeHtml(row.ticker)} cost ${escapeHtml(money(row.costBasis))}, market ${escapeHtml(money(row.marketValue))}, P/L ${escapeHtml(money(row.gainLoss))} (${escapeHtml(compactPercent(row.gainLossPct))})</title>
+        <text x="0" y="${y + 18}" fill="#cbd5e1" font-size="12" font-weight="700">${escapeHtml(row.ticker)}</text>
+        <rect x="${labelWidth}" y="${y}" width="${barWidth}" height="12" rx="4" fill="#0f172a" stroke="#1e293b" />
+        <rect x="${labelWidth}" y="${y}" width="${costWidth.toFixed(2)}" height="12" rx="4" fill="#64748b" opacity="0.62" />
+        <rect x="${labelWidth}" y="${y + 17}" width="${barWidth}" height="12" rx="4" fill="#0f172a" stroke="#1e293b" />
+        <rect x="${labelWidth}" y="${y + 17}" width="${marketWidth.toFixed(2)}" height="12" rx="4" fill="${marketColor}" opacity="0.84" />
+        <text x="${labelWidth + barWidth + 16}" y="${y + 11}" fill="#94a3b8" font-size="11">Cost ${escapeHtml(money(row.costBasis))}</text>
+        <text x="${labelWidth + barWidth + 16}" y="${y + 28}" fill="${marketColor}" font-size="11">Now ${escapeHtml(money(row.marketValue))}</text>
+      </g>
+    `;
+  }).join("");
+
+  els.positionsPerformanceChart.innerHTML = `
+    <div class="grid gap-3 lg:grid-cols-[minmax(0,1fr)_220px] lg:items-center">
+      <div class="overflow-x-auto scrollbar-thin">
+        <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Position performance chart" class="min-w-[680px]">
+          <text x="${labelWidth}" y="12" fill="#64748b" font-size="11">Cost basis</text>
+          <text x="${labelWidth + 100}" y="12" fill="#94a3b8" font-size="11">vs latest analyzed market value</text>
+          ${rowsSvg}
+        </svg>
+      </div>
+      <div class="rounded-md border border-slate-800 bg-slate-950/50 p-4">
+        <span class="text-xs text-slate-500">Priced Positions</span>
+        <p class="mt-2 text-2xl font-semibold text-white">${chartRows.length}</p>
+        <div class="mt-4 grid grid-cols-2 gap-2 text-xs">
+          <div class="rounded-md bg-slate-900/70 p-2">
+            <span class="block text-slate-500">Cost</span>
+            <span class="font-semibold text-slate-200">${escapeHtml(money(totalCost))}</span>
+          </div>
+          <div class="rounded-md bg-slate-900/70 p-2">
+            <span class="block text-slate-500">Market</span>
+            <span class="font-semibold text-slate-200">${escapeHtml(money(totalMarket))}</span>
+          </div>
+          <div class="col-span-2 rounded-md bg-slate-900/70 p-2">
+            <span class="block text-slate-500">Total P/L</span>
+            <span class="font-semibold ${totalGain >= 0 ? "text-emerald-300" : "text-rose-300"}">${escapeHtml(money(totalGain))} (${escapeHtml(compactPercent(totalGainPct))})</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
 }
 
 function positionSummaryCard(title, value, meta, iconName, accent) {
@@ -1111,17 +1202,28 @@ function showToast(message, type = "info") {
 function setActionStatus(message, state = "info") {
   if (!message) {
     els.actionStatus.classList.add("hidden");
+    els.actionStatus.classList.remove("work-surface", "is-working");
     els.sidebarStatus.textContent = selectedAnalysisId ? "Analysis selected." : "No analysis selected.";
+    setLiveWorkState(false);
     return;
   }
   const styles = {
     info: "border-cyan-400/30 bg-cyan-400/10 text-cyan-100",
+    working: "border-cyan-300/50 bg-cyan-400/10 text-cyan-50",
     success: "border-emerald-400/30 bg-emerald-400/10 text-emerald-100",
     error: "border-red-400/30 bg-red-400/10 text-red-100",
   };
-  els.actionStatus.className = `mt-5 rounded-md border px-4 py-3 text-sm ${styles[state] || styles.info}`;
-  els.actionStatus.textContent = message;
+  const isWorking = state === "working";
+  els.actionStatus.className = `mt-5 rounded-md border px-4 py-3 text-sm ${isWorking ? "work-surface is-working" : ""} ${styles[state] || styles.info}`;
+  els.actionStatus.innerHTML = isWorking
+    ? `<span class="inline-flex items-center gap-3"><span class="active-dot h-2.5 w-2.5 rounded-full bg-cyan-300"></span><span>${escapeHtml(message)}</span></span>`
+    : escapeHtml(message);
   els.sidebarStatus.textContent = message;
+  setLiveWorkState(isWorking);
+}
+
+function setLiveWorkState(isWorking) {
+  els.liveRunPanel?.classList.toggle("is-working", Boolean(isWorking));
 }
 
 function setButtonLoading(button, isLoading, label) {
@@ -1130,12 +1232,12 @@ function setButtonLoading(button, isLoading, label) {
   if (isLoading) {
     button.dataset.originalLabel = text ? text.textContent : button.textContent;
     button.disabled = true;
-    button.classList.add("opacity-70");
+    button.classList.add("opacity-80", "working-button");
     button.insertAdjacentHTML("afterbegin", `<span class="spinner inline-block h-4 w-4 rounded-full border-2 border-current border-r-transparent"></span>`);
     if (text && label) text.textContent = label;
   } else {
     button.disabled = false;
-    button.classList.remove("opacity-70");
+    button.classList.remove("opacity-80", "working-button");
     const spinner = button.querySelector(".spinner");
     if (spinner) spinner.remove();
     if (text && button.dataset.originalLabel) text.textContent = button.dataset.originalLabel;
@@ -1829,7 +1931,8 @@ function statusBadge(status) {
     failed: "bg-red-400/10 text-red-200 border-red-400/20",
     pending: "bg-slate-400/10 text-slate-200 border-slate-400/20",
   };
-  return `<span class="rounded-full border px-2.5 py-1 text-xs font-semibold ${styles[status] || styles.pending}">${escapeHtml(status || "pending")}</span>`;
+  const isRunning = status === "running";
+  return `<span class="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold ${styles[status] || styles.pending}">${isRunning ? `<span class="active-dot h-2 w-2 rounded-full bg-amber-300"></span>` : ""}${escapeHtml(status || "pending")}</span>`;
 }
 
 function ratingBadge(rating) {
@@ -1860,8 +1963,9 @@ function renderAnalyses(analyses) {
   sortedAnalyses.slice(0, 5).forEach((analysis) => {
     const card = document.createElement("button");
     const selected = analysis.id === selectedAnalysisId;
+    const isRunning = analysis.status === "running";
     card.type = "button";
-    card.className = `w-full rounded-lg border p-4 text-left transition hover:border-cyan-400/40 hover:bg-slate-900/70 ${
+    card.className = `w-full rounded-lg border p-4 text-left transition hover:border-cyan-400/40 hover:bg-slate-900/70 ${isRunning ? "work-surface is-working" : ""} ${
       selected ? "border-cyan-400/50 bg-cyan-400/10" : "border-slate-800 bg-slate-950/40"
     }`;
     card.dataset.id = analysis.id;
@@ -1942,8 +2046,9 @@ function renderAnalysisHistory(analyses) {
 function renderAnalysisHistoryRow(analysis) {
   const counts = recommendationActionCounts(analysis.recommendation || "");
   const selected = analysis.id === selectedAnalysisId;
+  const isRunning = analysis.status === "running";
   return `
-    <article class="grid gap-3 px-4 py-4 transition ${selected ? "bg-cyan-400/5" : "hover:bg-slate-900/40"} lg:grid-cols-[minmax(0,1.3fr)_180px_220px_auto] lg:items-center">
+    <article class="grid gap-3 px-4 py-4 transition ${isRunning ? "work-surface is-working" : ""} ${selected ? "bg-cyan-400/5" : "hover:bg-slate-900/40"} lg:grid-cols-[minmax(0,1.3fr)_180px_220px_auto] lg:items-center">
       <div class="min-w-0">
         <div class="flex flex-wrap items-center gap-2">
           <h4 class="truncate text-sm font-semibold text-white">${escapeHtml(analysis.tickers || "Untitled analysis")}</h4>
@@ -2016,11 +2121,13 @@ function setEmptyReport(message) {
 function updateSelectedStatus(analysis) {
   els.selectedAnalysisLabel.textContent = `${analysis.tickers} · ${formatDateTime(analysis.created_at)}`;
   els.selectedStatus.classList.remove("hidden");
-  els.selectedStatus.outerHTML = `<div id="selected-status" class="${statusBadgeClass(analysis.status)}">${escapeHtml(analysis.status)}</div>`;
+  const isRunning = analysis.status === "running";
+  els.selectedStatus.outerHTML = `<div id="selected-status" class="${statusBadgeClass(analysis.status)}">${isRunning ? `<span class="active-dot h-2 w-2 rounded-full bg-amber-300"></span>` : ""}${escapeHtml(analysis.status)}</div>`;
   els.selectedStatus = document.getElementById("selected-status");
   els.logsSubtitle.textContent = analysis.status === "running" ? "Streaming live agent output." : "Showing persisted output.";
+  els.logsConsole?.classList.toggle("logs-working", isRunning);
   if (analysis.status === "running") {
-    setActionStatus("Agents are running. New log lines will appear automatically.", "info");
+    setActionStatus("Agents are running. New log lines will appear automatically.", "working");
   } else if (analysis.status === "completed") {
     setActionStatus("Analysis completed.", "success");
   } else if (analysis.status === "failed") {
@@ -2030,10 +2137,10 @@ function updateSelectedStatus(analysis) {
 
 function statusBadgeClass(status) {
   const styles = {
-    completed: "rounded-full border border-emerald-400/20 bg-emerald-400/10 px-3 py-1 text-xs font-semibold text-emerald-200",
-    running: "rounded-full border border-amber-400/20 bg-amber-400/10 px-3 py-1 text-xs font-semibold text-amber-200",
-    failed: "rounded-full border border-red-400/20 bg-red-400/10 px-3 py-1 text-xs font-semibold text-red-200",
-    pending: "rounded-full border border-slate-400/20 bg-slate-400/10 px-3 py-1 text-xs font-semibold text-slate-200",
+    completed: "inline-flex items-center gap-1.5 rounded-full border border-emerald-400/20 bg-emerald-400/10 px-3 py-1 text-xs font-semibold text-emerald-200",
+    running: "inline-flex items-center gap-1.5 rounded-full border border-amber-400/20 bg-amber-400/10 px-3 py-1 text-xs font-semibold text-amber-200",
+    failed: "inline-flex items-center gap-1.5 rounded-full border border-red-400/20 bg-red-400/10 px-3 py-1 text-xs font-semibold text-red-200",
+    pending: "inline-flex items-center gap-1.5 rounded-full border border-slate-400/20 bg-slate-400/10 px-3 py-1 text-xs font-semibold text-slate-200",
   };
   return styles[status] || styles.pending;
 }
@@ -2757,7 +2864,7 @@ async function createAnalysis(tickers, options = {}) {
   const ownedTickers = portfolioTickers();
   let requestTickers = uniqueTickers([...(tickers || []), ...ownedTickers]);
   setButtonLoading(button, true, label);
-  setActionStatus(options.monitor ? "Starting monitor run..." : "Starting analysis...", "info");
+  setActionStatus(options.monitor ? "Starting monitor run..." : "Starting analysis...", "working");
   showToast(options.monitor ? "Monitor run requested." : "Analysis requested.", "info");
   setReportLoading("Creating analysis run...");
   els.logsConsole.innerHTML = "";
@@ -2786,7 +2893,7 @@ async function createAnalysis(tickers, options = {}) {
 
     selectedAnalysisId = data.analysis_id;
     appendLog(`Analysis queued: ${data.analysis_id}`);
-    setActionStatus("Analysis queued. Connecting to live logs...", "success");
+    setActionStatus("Analysis queued. Connecting to live logs...", "working");
     showToast("Analysis started.", "success");
     if (options.monitor || !requestTickers.length) {
       markCandidateDiscovery();
@@ -2816,6 +2923,7 @@ async function startMonitoring() {
 
 function openTradeModal(rec) {
   const price = Number(rec.current_price || 0);
+  const dividendYield = normalizedYield(rec.dividend_yield ?? rec.valuation?.dividend_yield);
   const maxSpend = Number(portfolioState.available || 0) * (Number(analysisSettings.positionSizePct || 5) / 100);
   const shares = price > 0 ? Math.floor(maxSpend / price) : 0;
   const stopPrice = price ? price * (1 - Number(analysisSettings.stopLossPct || 10) / 100) : 0;
@@ -2840,8 +2948,8 @@ function openTradeModal(rec) {
         <input id="trade-target" min="0" step="0.01" type="number" value="${targetPrice.toFixed(2)}" class="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-white outline-none focus:border-cyan-400" />
       </label>
       <label class="block">
-        <span class="text-xs text-slate-500">Dividend Yield %</span>
-        <input id="trade-dividend" min="0" step="0.01" type="number" value="0.00" class="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-white outline-none focus:border-cyan-400" />
+        <span class="text-xs text-slate-500">Dividend Yield</span>
+        <div class="mt-1 rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-white">${dividendYield === null ? "Unavailable" : compactPercent(dividendYield)}</div>
       </label>
     </div>
     <div class="grid grid-cols-1 gap-2 text-sm sm:grid-cols-3">
@@ -2851,7 +2959,7 @@ function openTradeModal(rec) {
     </div>
     <p class="mt-3 leading-6">${escapeHtml(rec.reason || "No specific reason provided.")}</p>
   `;
-  currentTrade = { ticker: rec.ticker, price };
+  currentTrade = { ticker: rec.ticker, price, dividendYield };
   wireTradeCalculator();
   openModal(els.tradeModal);
 }
@@ -2860,7 +2968,6 @@ function wireTradeCalculator() {
   const sharesInput = document.getElementById("trade-shares");
   const stopInput = document.getElementById("trade-stop");
   const targetInput = document.getElementById("trade-target");
-  const dividendInput = document.getElementById("trade-dividend");
   const costEl = document.getElementById("trade-cost");
   const gainEl = document.getElementById("trade-gain");
   const dividendEl = document.getElementById("trade-dividend-estimate");
@@ -2868,13 +2975,13 @@ function wireTradeCalculator() {
   const calculate = () => {
     const shares = Math.max(0, Math.floor(Number(sharesInput.value || 0)));
     const target = Math.max(0, Number(targetInput.value || 0));
-    const dividendYield = Math.max(0, Number(dividendInput.value || 0)) / 100;
+    const dividendYield = normalizedYield(currentTrade.dividendYield);
     const cost = shares * currentTrade.price;
     const projectedGain = Math.max(0, target - currentTrade.price) * shares;
-    const dividendEstimate = cost * dividendYield;
+    const dividendEstimate = dividendYield === null ? null : cost * dividendYield;
     costEl.textContent = money(cost);
     gainEl.textContent = money(projectedGain);
-    dividendEl.textContent = money(dividendEstimate);
+    dividendEl.textContent = dividendEstimate === null ? "Unavailable" : money(dividendEstimate);
     currentTrade = {
       ...currentTrade,
       shares,
@@ -2887,7 +2994,7 @@ function wireTradeCalculator() {
     };
   };
 
-  [sharesInput, stopInput, targetInput, dividendInput].forEach((input) => {
+  [sharesInput, stopInput, targetInput].forEach((input) => {
     input.addEventListener("input", calculate);
   });
   calculate();
@@ -3053,9 +3160,9 @@ function wireEvents() {
       addPositionFromTrade(currentTrade);
       savePortfolioState(portfolioState);
       updatePortfolioUI(portfolioState);
-      showToast(`${currentTrade.shares} shares of ${currentTrade.ticker} added to the simulation.`, "success");
+      showToast(`${currentTrade.shares} shares of ${currentTrade.ticker} added to your tracked positions.`, "success");
     } else {
-      showToast("No shares available for this simulated trade.", "error");
+      showToast("No shares available for this trade.", "error");
     }
     closeModal(els.tradeModal);
     currentTrade = null;

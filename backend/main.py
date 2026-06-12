@@ -968,6 +968,8 @@ async def run_analysis(analysis_id: str, tickers_str: str, analysis_settings: Di
                                 rec['price_change_start_date'] = info.get('price_change_start_date')
                                 rec['price_change_end_date'] = info.get('price_change_end_date')
                                 rec['price_change_window_days'] = info.get('price_change_window_days')
+                                rec['dividend_yield'] = info.get('dividend_yield')
+                                rec['annual_dividend_rate'] = info.get('annual_dividend_rate')
                             # attach a report timestamp in ISO format
                             rec['report_time'] = datetime.utcnow().isoformat()
                             score = signal_scores.get(normalized_ticker)
@@ -1016,6 +1018,8 @@ async def run_analysis(analysis_id: str, tickers_str: str, analysis_settings: Di
                                 neutral_entry['price_change_start_date'] = info.get('price_change_start_date')
                                 neutral_entry['price_change_end_date'] = info.get('price_change_end_date')
                                 neutral_entry['price_change_window_days'] = info.get('price_change_window_days')
+                                neutral_entry['dividend_yield'] = info.get('dividend_yield')
+                                neutral_entry['annual_dividend_rate'] = info.get('annual_dividend_rate')
                             neutral_entry['report_time'] = datetime.utcnow().isoformat()
                             if score:
                                 neutral_entry['score'] = score.get('final_score')
