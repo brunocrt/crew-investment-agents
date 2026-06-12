@@ -51,6 +51,7 @@ const els = {
   holdingsList: document.getElementById("holdings-list"),
   holdingTicker: document.getElementById("holding-ticker"),
   investedAmount: document.getElementById("invested-amount"),
+  investmentWizardModal: document.getElementById("investment-wizard-modal"),
   lastRefresh: document.getElementById("last-refresh"),
   liveRunPanel: document.getElementById("live-run-panel"),
   loginError: document.getElementById("login-error"),
@@ -65,6 +66,7 @@ const els = {
   logsPanelBody: document.getElementById("logs-panel-body"),
   logsSubtitle: document.getElementById("logs-subtitle"),
   logoutBtn: document.getElementById("logout-btn"),
+  mainContent: document.getElementById("main-content"),
   monitorBtn: document.getElementById("monitor-btn"),
   newAnalysisBtn: document.getElementById("new-analysis-btn"),
   newUserDisplayName: document.getElementById("new-user-display-name"),
@@ -86,10 +88,12 @@ const els = {
   refreshSessions: document.getElementById("refresh-sessions"),
   refreshUsers: document.getElementById("refresh-users"),
   reloadAgentConfig: document.getElementById("reload-agent-config"),
+  runInvestmentWizard: document.getElementById("run-investment-wizard"),
   reportCollapseBtn: document.getElementById("report-collapse-btn"),
   reportPanelBody: document.getElementById("report-panel-body"),
   reportSummary: document.getElementById("report-summary"),
   dashboardNavBtn: document.getElementById("dashboard-nav-btn"),
+  dashboardHeader: document.getElementById("dashboard-header"),
   dashboardView: document.getElementById("dashboard-view"),
   saveAnalysisSettings: document.getElementById("save-analysis-settings"),
   saveAgentConfig: document.getElementById("save-agent-config"),
@@ -123,6 +127,16 @@ const els = {
   usersList: document.getElementById("users-list"),
   usersNavBtn: document.getElementById("users-nav-btn"),
   usersView: document.getElementById("users-view"),
+  wizardApply: document.getElementById("wizard-apply"),
+  wizardCapital: document.getElementById("wizard-capital"),
+  wizardExperience: document.getElementById("wizard-experience"),
+  wizardGoal: document.getElementById("wizard-goal"),
+  wizardHorizon: document.getElementById("wizard-horizon"),
+  wizardPreview: document.getElementById("wizard-preview"),
+  wizardRiskDial: document.getElementById("wizard-risk-dial"),
+  wizardRiskLabel: document.getElementById("wizard-risk-label"),
+  wizardRiskSummary: document.getElementById("wizard-risk-summary"),
+  wizardSkip: document.getElementById("wizard-skip"),
 };
 
 let currentSocket = null;
@@ -142,6 +156,8 @@ let sidebarCollapsed = localStorage.getItem("sidebar-collapsed") === "true";
 let panelCollapseState = loadPanelCollapseState();
 let activeView = localStorage.getItem("active-view") || "dashboard";
 let analysisSettings = loadAnalysisSettings();
+let currentLogContext = { agent: "Crew", runId: "" };
+let visibleLogKeys = new Set();
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -370,11 +386,15 @@ function setActiveView(view) {
   activeView = allowedViews.includes(view) ? view : "dashboard";
   if (activeView === "agents" && currentUser?.role !== "admin") activeView = "dashboard";
   localStorage.setItem("active-view", activeView);
+  applyPageTone(activeView);
   const isSettings = activeView === "settings";
   const isPositions = activeView === "positions";
   const isHistory = activeView === "history";
   const isAgents = activeView === "agents";
   const isUsers = activeView === "users";
+  const isDashboard = activeView === "dashboard";
+  els.dashboardHeader?.classList.toggle("hidden", !isDashboard);
+  els.portfolioSummary?.classList.toggle("hidden", !isDashboard);
   els.dashboardView?.classList.toggle("hidden", activeView !== "dashboard");
   els.positionsView?.classList.toggle("hidden", !isPositions);
   els.historyView?.classList.toggle("hidden", !isHistory);
@@ -397,6 +417,13 @@ function setActiveView(view) {
     }
   }
   updateViewNav();
+}
+
+function applyPageTone(view) {
+  if (!els.mainContent) return;
+  const tones = ["dashboard", "positions", "history", "settings", "agents", "users"];
+  tones.forEach((tone) => els.mainContent.classList.remove(`page-tone-${tone}`));
+  els.mainContent.classList.add(`page-tone-${tones.includes(view) ? view : "dashboard"}`);
 }
 
 function updateViewNav() {
@@ -572,6 +599,120 @@ function applyRiskToleranceDial(value) {
   if (els.settingMinOpportunity) els.settingMinOpportunity.value = profile.minOpportunityScore.toFixed(0);
   if (els.settingMinValuation) els.settingMinValuation.value = profile.minValuationScore.toFixed(0);
   renderRiskToleranceDial(profile.value);
+}
+
+function suggestedWizardRiskDial() {
+  const goalScores = {
+    capital_preservation: 18,
+    income: 32,
+    balanced: 50,
+    growth: 68,
+    aggressive_growth: 84,
+  };
+  const horizonAdjustment = {
+    short: -12,
+    medium: 0,
+    long: 8,
+    very_long: 12,
+  };
+  const experienceAdjustment = {
+    new: -8,
+    some: 0,
+    experienced: 6,
+  };
+  const base = goalScores[els.wizardGoal?.value || "balanced"] ?? 50;
+  return clampNumber(base + (horizonAdjustment[els.wizardHorizon?.value || "medium"] || 0) + (experienceAdjustment[els.wizardExperience?.value || "some"] || 0), 0, 100, 50);
+}
+
+function updateInvestmentWizardSuggestion(options = {}) {
+  if (!els.investmentWizardModal) return;
+  const suggested = suggestedWizardRiskDial();
+  const dial = options.preserveManualDial ? clampNumber(els.wizardRiskDial?.value, 0, 100, suggested) : suggested;
+  if (els.wizardRiskDial) els.wizardRiskDial.value = String(Math.round(dial));
+  const profile = riskPreferenceProfile(dial);
+  if (els.wizardRiskLabel) {
+    els.wizardRiskLabel.textContent = `${profile.label} (${Math.round(profile.value)})`;
+    els.wizardRiskLabel.className = profile.riskTolerance === "aggressive"
+      ? "rounded-full border border-amber-400/30 bg-amber-400/10 px-2.5 py-1 text-xs font-semibold text-amber-200"
+      : profile.riskTolerance === "conservative"
+        ? "rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2.5 py-1 text-xs font-semibold text-emerald-200"
+        : "rounded-full border border-cyan-400/20 bg-cyan-400/10 px-2.5 py-1 text-xs font-semibold text-cyan-200";
+  }
+  if (els.wizardRiskSummary) els.wizardRiskSummary.textContent = profile.summary;
+  renderInvestmentWizardPreview(profile);
+}
+
+function renderInvestmentWizardPreview(profile = riskPreferenceProfile(els.wizardRiskDial?.value || 50)) {
+  if (!els.wizardPreview) return;
+  const capital = clampNumber(els.wizardCapital?.value, 0, 1_000_000_000, 10000);
+  const refresh = profile.riskTolerance === "conservative" ? "weekly" : "monitor";
+  els.wizardPreview.innerHTML = `
+    <div class="rounded-md bg-slate-900/70 p-2"><span class="block text-slate-500">Starting capital</span><span class="font-semibold text-slate-200">${escapeHtml(money(capital))}</span></div>
+    <div class="rounded-md bg-slate-900/70 p-2"><span class="block text-slate-500">Position size</span><span class="font-semibold text-slate-200">${profile.positionSizePct.toFixed(1)}%</span></div>
+    <div class="rounded-md bg-slate-900/70 p-2"><span class="block text-slate-500">Stop / Target</span><span class="font-semibold text-slate-200">${profile.stopLossPct.toFixed(1)}% / ${profile.targetGainPct.toFixed(1)}%</span></div>
+    <div class="rounded-md bg-slate-900/70 p-2"><span class="block text-slate-500">Signal thresholds</span><span class="font-semibold text-slate-200">${profile.minOpportunityScore.toFixed(0)} opportunity, ${profile.minValuationScore.toFixed(0)} valuation</span></div>
+    <div class="rounded-md bg-slate-900/70 p-2"><span class="block text-slate-500">Candidate refresh</span><span class="font-semibold text-slate-200">${refresh}</span></div>
+  `;
+}
+
+function openInvestmentWizard(options = {}) {
+  if (!els.investmentWizardModal) return;
+  if (els.wizardCapital) els.wizardCapital.value = Number(portfolioState.available || 10000).toFixed(0);
+  updateInvestmentWizardSuggestion();
+  openModal(els.investmentWizardModal);
+  els.investmentWizardModal.dataset.firstLogin = options.firstLogin ? "true" : "false";
+}
+
+async function updateCurrentUserPreferences(preferences) {
+  if (!currentUser) return;
+  const payload = {
+    display_name: currentUser.display_name || currentUser.username || "",
+    preferences,
+  };
+  const res = await apiFetch("/auth/me", {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error("Unable to save user preferences");
+  const data = await res.json();
+  storeSession(authToken(), data.user);
+}
+
+async function completeInvestmentWizard({ applySettings }) {
+  const profile = riskPreferenceProfile(els.wizardRiskDial?.value || suggestedWizardRiskDial());
+  const capital = clampNumber(els.wizardCapital?.value, 0, 1_000_000_000, 10000);
+  const preferences = {
+    ...(currentUser?.preferences || {}),
+    investmentWizardCompleted: true,
+    investmentGoal: els.wizardGoal?.value || "balanced",
+    investmentHorizon: els.wizardHorizon?.value || "medium",
+    investmentExperience: els.wizardExperience?.value || "some",
+    investmentRiskDial: Math.round(profile.value),
+  };
+
+  if (applySettings) {
+    portfolioState = normalizePortfolio({ ...portfolioState, available: capital });
+    savePortfolioState(portfolioState);
+    analysisSettings = {
+      ...analysisSettings,
+      positionSizePct: profile.positionSizePct,
+      stopLossPct: profile.stopLossPct,
+      targetGainPct: profile.targetGainPct,
+      minOpportunityScore: profile.minOpportunityScore,
+      minValuationScore: profile.minValuationScore,
+      riskTolerance: profile.riskTolerance,
+      riskToleranceDial: profile.value,
+      candidateRefreshCadence: profile.riskTolerance === "conservative" ? "weekly" : "monitor",
+    };
+    const key = analysisSettingsStorageKey();
+    if (key) localStorage.setItem(key, JSON.stringify(analysisSettings));
+    updateAnalysisSettingsUI();
+    updatePortfolioUI(portfolioState);
+  }
+
+  await updateCurrentUserPreferences(preferences);
+  closeModal(els.investmentWizardModal);
+  showToast(applySettings ? "Investment setup applied." : "Setup wizard skipped. You can rerun it from Account.", applySettings ? "success" : "info");
 }
 
 function clampNumber(value, min, max, fallback) {
@@ -930,7 +1071,7 @@ function renderPositionsPage() {
   els.positionsList.querySelectorAll(".position-analyze").forEach((button) => {
     button.addEventListener("click", async () => {
       setActiveView("dashboard");
-      await createAnalysis([button.dataset.ticker]);
+      await createAnalysis([button.dataset.ticker], { includePortfolioHoldings: false });
     });
   });
   els.positionsList.querySelectorAll(".position-remove").forEach((button) => {
@@ -2154,6 +2295,7 @@ async function selectAnalysis(id) {
   renderAnalysisHistory(analysesCache);
   setReportLoading("Loading report...");
   els.logsConsole.innerHTML = "";
+  resetLogFormattingContext(id);
 
   if (currentSocket) {
     currentSocket.close();
@@ -2189,11 +2331,131 @@ function openLogSocket(id) {
 }
 
 function appendLog(message) {
+  const entry = formatAgentLogEntry(message);
+  if (!entry) return;
+  const key = `${entry.agent}|${entry.output}`;
+  if (visibleLogKeys.has(key)) return;
+  visibleLogKeys.add(key);
   const div = document.createElement("div");
-  div.className = "border-b border-slate-900/80 py-1 last:border-0";
-  div.textContent = message;
+  div.className = "border-b border-slate-900/80 py-2 last:border-0";
+  div.innerHTML = `
+    <div class="mb-1 flex flex-wrap items-center gap-2 text-[10px] uppercase tracking-wide text-slate-500">
+      <span>${escapeHtml(entry.datetime)}</span>
+      <span class="text-slate-700">/</span>
+      <span>${escapeHtml(entry.agent)}</span>
+      <span class="text-slate-700">/</span>
+      <span>${escapeHtml(entry.runId)}</span>
+    </div>
+    <div class="whitespace-pre-wrap text-slate-300">${escapeHtml(entry.output)}</div>
+  `;
   els.logsConsole.appendChild(div);
   els.logsConsole.scrollTop = els.logsConsole.scrollHeight;
+}
+
+function resetLogFormattingContext(runId = selectedAnalysisId) {
+  currentLogContext = { agent: "Crew", runId: runId || "" };
+  visibleLogKeys = new Set();
+}
+
+function formatAgentLogEntry(message) {
+  const raw = String(message || "").replace(/\u001b\[[0-9;]*m/g, "").trim();
+  if (!raw) return null;
+
+  const agentMatch = raw.match(/^(?:Agent|Role)\s*:\s*(.+)$/i);
+  if (agentMatch) {
+    currentLogContext.agent = compactAgentName(agentMatch[1]);
+    return {
+      datetime: formatLogTimestamp(),
+      agent: currentLogContext.agent,
+      runId: logRunId(),
+      output: "Agent started.",
+    };
+  }
+
+  const taskMatch = raw.match(/^Task\s*:\s*(.+)$/i);
+  if (taskMatch) {
+    currentLogContext.agent = currentLogContext.agent || "Crew";
+    return null;
+  }
+
+  const inferredAgent = inferAgentFromLog(raw);
+  if (inferredAgent) currentLogContext.agent = inferredAgent;
+
+  const output = cleanAgentLogOutput(raw);
+  if (!output || shouldSuppressAgentLog(output)) return null;
+
+  return {
+    datetime: formatLogTimestamp(),
+    agent: currentLogContext.agent || "Crew",
+    runId: logRunId(),
+    output,
+  };
+}
+
+function formatLogTimestamp() {
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(new Date());
+}
+
+function logRunId() {
+  return selectedAnalysisId ? `run ${String(selectedAnalysisId).slice(0, 8)}` : "local";
+}
+
+function compactAgentName(value) {
+  return String(value || "Crew")
+    .replace(/\s+/g, " ")
+    .replace(/^["']|["']$/g, "")
+    .trim()
+    .slice(0, 72) || "Crew";
+}
+
+function inferAgentFromLog(value) {
+  const text = String(value || "").toLowerCase();
+  if (text.includes("capex")) return "Capex Researcher";
+  if (text.includes("pricing") || text.includes("price spike") || text.includes("commodity")) return "Pricing Analyst";
+  if (text.includes("rotation") || text.includes("sector")) return "Rotation Analyst";
+  if (text.includes("recommendation") || text.includes("buy") || text.includes("sell") || text.includes("hold")) return "Recommendation Strategist";
+  return null;
+}
+
+function cleanAgentLogOutput(value) {
+  return String(value || "")
+    .replace(/^#+\s*/, "")
+    .replace(/^(?:Thought|Action|Action Input|Observation|Tool Input)\s*:\s*/i, "")
+    .replace(/^Tool Output\s*:\s*/i, "")
+    .replace(/^Final Answer\s*:\s*/i, "Final output: ")
+    .trim();
+}
+
+function shouldSuppressAgentLog(value) {
+  const text = String(value || "").trim();
+  const lower = text.toLowerCase();
+  if (!text || /^[-=_]{3,}$/.test(text)) return true;
+  const noisyStarts = [
+    "task:",
+    "task description:",
+    "expected output:",
+    "description:",
+    "backstory:",
+    "goal:",
+    "you are ",
+    "your task ",
+    "you need to ",
+    "use the following format",
+    "i now can give a great answer",
+    "this is the expected criteria",
+    "begin!",
+  ];
+  if (noisyStarts.some((prefix) => lower.startsWith(prefix))) return true;
+  if (lower.includes("final answer must be the great and the most complete as possible")) return true;
+  if (lower.includes("do not use tools")) return true;
+  if (lower.includes("coworker mentioned not to use tools")) return true;
+  return false;
 }
 
 async function displayReport(analysisId) {
@@ -2862,12 +3124,14 @@ async function createAnalysis(tickers, options = {}) {
   const button = options.monitor ? els.monitorBtn : els.newAnalysisBtn;
   const label = options.monitor ? "Starting Monitor" : "Starting";
   const ownedTickers = portfolioTickers();
-  let requestTickers = uniqueTickers([...(tickers || []), ...ownedTickers]);
+  const includePortfolioHoldings = options.includePortfolioHoldings !== false || options.monitor === true;
+  let requestTickers = uniqueTickers([...(tickers || []), ...(includePortfolioHoldings ? ownedTickers : [])]);
   setButtonLoading(button, true, label);
   setActionStatus(options.monitor ? "Starting monitor run..." : "Starting analysis...", "working");
   showToast(options.monitor ? "Monitor run requested." : "Analysis requested.", "info");
   setReportLoading("Creating analysis run...");
   els.logsConsole.innerHTML = "";
+  resetLogFormattingContext();
   appendLog("Analysis request sent. Waiting for backend acknowledgement...");
 
   try {
@@ -2880,7 +3144,7 @@ async function createAnalysis(tickers, options = {}) {
       }
       requestTickers = uniqueTickers([...universeTickers, ...ownedTickers]);
     }
-    if (ownedTickers.length && requestTickers.length) {
+    if (includePortfolioHoldings && ownedTickers.length && requestTickers.length) {
       appendLog(`Portfolio holdings included: ${ownedTickers.join(", ")}`);
     }
     const res = await apiFetch("/analyses", {
@@ -3110,11 +3374,12 @@ function wireEvents() {
       return;
     }
     setActiveView("dashboard");
-    await createAnalysis(tickers);
+    await createAnalysis(tickers, { includePortfolioHoldings: true });
   });
   els.positionsAddLink?.addEventListener("click", () => setActiveView("settings"));
   els.clearLogs.addEventListener("click", () => {
     els.logsConsole.innerHTML = "";
+    resetLogFormattingContext();
     appendLog("Logs cleared locally.");
   });
   els.savePortfolio.addEventListener("click", () => {
@@ -3150,9 +3415,30 @@ function wireEvents() {
       return;
     }
     setActiveView("dashboard");
-    await createAnalysis(tickers);
+    await createAnalysis(tickers, { includePortfolioHoldings: true });
   });
   els.saveAnalysisSettings?.addEventListener("click", saveAnalysisSettings);
+  els.runInvestmentWizard?.addEventListener("click", () => openInvestmentWizard());
+  [els.wizardGoal, els.wizardHorizon, els.wizardExperience].forEach((input) => {
+    input?.addEventListener("change", () => updateInvestmentWizardSuggestion());
+  });
+  els.wizardCapital?.addEventListener("input", () => updateInvestmentWizardSuggestion({ preserveManualDial: true }));
+  els.wizardRiskDial?.addEventListener("input", () => updateInvestmentWizardSuggestion({ preserveManualDial: true }));
+  els.wizardApply?.addEventListener("click", async () => {
+    try {
+      await completeInvestmentWizard({ applySettings: true });
+    } catch (e) {
+      showToast("Could not save setup wizard choices.", "error");
+    }
+  });
+  els.wizardSkip?.addEventListener("click", async () => {
+    try {
+      await completeInvestmentWizard({ applySettings: false });
+    } catch (e) {
+      closeModal(els.investmentWizardModal);
+      showToast("Wizard skipped locally, but preferences were not saved.", "error");
+    }
+  });
   els.tradeCancel.addEventListener("click", () => closeModal(els.tradeModal));
   els.tradeConfirm.addEventListener("click", () => {
     if (currentTrade && currentTrade.shares > 0) {
@@ -3212,6 +3498,9 @@ async function startApp() {
       // Status is already surfaced by refresh().
     }
   }, 8000);
+  if (!currentUser?.preferences?.investmentWizardCompleted) {
+    window.setTimeout(() => openInvestmentWizard({ firstLogin: true }), 350);
+  }
 }
 
 async function init() {

@@ -158,6 +158,46 @@
         background: linear-gradient(135deg, rgba(45, 212, 191, 0.08), transparent 34%);
       }
 
+      .page-tone {
+        transition: background 180ms ease, box-shadow 180ms ease;
+      }
+
+      .page-tone-dashboard {
+        background:
+          linear-gradient(180deg, rgba(14, 116, 144, 0.08), transparent 360px),
+          rgba(2, 6, 23, 0.06);
+      }
+
+      .page-tone-positions {
+        background:
+          linear-gradient(180deg, rgba(20, 184, 166, 0.13), transparent 380px),
+          rgba(6, 20, 18, 0.16);
+      }
+
+      .page-tone-history {
+        background:
+          linear-gradient(180deg, rgba(245, 158, 11, 0.1), transparent 360px),
+          rgba(23, 18, 8, 0.12);
+      }
+
+      .page-tone-settings {
+        background:
+          linear-gradient(180deg, rgba(56, 189, 248, 0.08), transparent 360px),
+          rgba(8, 19, 28, 0.14);
+      }
+
+      .page-tone-agents {
+        background:
+          linear-gradient(180deg, rgba(132, 204, 22, 0.08), transparent 360px),
+          rgba(14, 22, 10, 0.12);
+      }
+
+      .page-tone-users {
+        background:
+          linear-gradient(180deg, rgba(244, 114, 182, 0.08), transparent 360px),
+          rgba(26, 12, 20, 0.12);
+      }
+
       @media (min-width: 1024px) {
         body.sidebar-collapsed #sidebar {
           width: 76px;
@@ -326,8 +366,8 @@
         </div>
       </aside>
 
-      <main class="flex-1 px-4 py-5 sm:px-6 lg:px-8 lg:py-7">
-        <header class="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+      <main id="main-content" class="page-tone page-tone-dashboard flex-1 px-4 py-5 sm:px-6 lg:px-8 lg:py-7">
+        <header id="dashboard-header" class="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
           <div>
             <div class="flex flex-wrap items-center gap-2">
               <span class="rounded-full bg-emerald-400/10 px-3 py-1 text-xs font-medium text-emerald-200">Market monitor</span>
@@ -720,10 +760,16 @@
                   </select>
                 </label>
                 <div class="lg:col-span-2">
-                  <button class="inline-flex items-center gap-2 rounded-md bg-cyan-500 px-3 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-400">
-                    <i data-lucide="save" class="h-4 w-4"></i>
-                    Save Account
-                  </button>
+                  <div class="flex flex-wrap gap-2">
+                    <button class="inline-flex items-center gap-2 rounded-md bg-cyan-500 px-3 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-400">
+                      <i data-lucide="save" class="h-4 w-4"></i>
+                      Save Account
+                    </button>
+                    <button id="run-investment-wizard" type="button" class="inline-flex items-center gap-2 rounded-md bg-slate-800 px-3 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-700">
+                      <i data-lucide="wand-sparkles" class="h-4 w-4"></i>
+                      Run Setup Wizard
+                    </button>
+                  </div>
                 </div>
               </form>
             </section>
@@ -786,6 +832,80 @@
               </section>
             </section>
           </section>
+        </div>
+
+        <div id="investment-wizard-modal" class="fixed inset-0 z-40 hidden items-center justify-center bg-black/70 p-4">
+          <div class="panel max-h-[88vh] w-full max-w-3xl overflow-y-auto rounded-lg p-5 scrollbar-thin">
+            <div class="flex items-start justify-between gap-4">
+              <div>
+                <p class="text-xs font-semibold uppercase tracking-[0.16em] text-cyan-300">First-time setup</p>
+                <h3 class="mt-2 text-xl font-semibold text-white">Configure Your Investment Workspace</h3>
+                <p class="mt-1 text-sm leading-6 text-slate-400">Tell the app how you invest and it will initialize your capital, risk tolerance, and analysis defaults.</p>
+              </div>
+              <button class="modal-close inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-slate-300 hover:bg-slate-800" data-modal="investment-wizard-modal" title="Close wizard">
+                <i data-lucide="x" class="h-4 w-4"></i>
+              </button>
+            </div>
+
+            <div class="mt-5 grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_260px]">
+              <form id="investment-wizard-form" class="space-y-4">
+                <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <label class="block">
+                    <span class="text-xs text-slate-400">Primary Goal</span>
+                    <select id="wizard-goal" class="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-white outline-none focus:border-cyan-400">
+                      <option value="balanced">Balanced growth</option>
+                      <option value="capital_preservation">Protect capital</option>
+                      <option value="income">Dividend income</option>
+                      <option value="growth">Long-term growth</option>
+                      <option value="aggressive_growth">Aggressive growth</option>
+                    </select>
+                  </label>
+                  <label class="block">
+                    <span class="text-xs text-slate-400">Time Horizon</span>
+                    <select id="wizard-horizon" class="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-white outline-none focus:border-cyan-400">
+                      <option value="medium">1-3 years</option>
+                      <option value="short">Under 1 year</option>
+                      <option value="long">3-7 years</option>
+                      <option value="very_long">7+ years</option>
+                    </select>
+                  </label>
+                  <label class="block">
+                    <span class="text-xs text-slate-400">Available Capital</span>
+                    <input id="wizard-capital" type="number" min="0" step="100" value="10000" class="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-white outline-none focus:border-cyan-400" />
+                  </label>
+                  <label class="block">
+                    <span class="text-xs text-slate-400">Investing Experience</span>
+                    <select id="wizard-experience" class="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-white outline-none focus:border-cyan-400">
+                      <option value="some">Some experience</option>
+                      <option value="new">New investor</option>
+                      <option value="experienced">Experienced</option>
+                    </select>
+                  </label>
+                </div>
+                <label class="block">
+                  <div class="flex items-center justify-between gap-3">
+                    <span class="text-xs text-slate-400">Suggested Risk Tolerance</span>
+                    <span id="wizard-risk-label" class="rounded-full border border-cyan-400/20 bg-cyan-400/10 px-2.5 py-1 text-xs font-semibold text-cyan-200">Balanced (50)</span>
+                  </div>
+                  <input id="wizard-risk-dial" type="range" min="0" max="100" value="50" class="mt-3 w-full accent-cyan-400" />
+                  <p id="wizard-risk-summary" class="mt-2 text-xs leading-5 text-slate-500"></p>
+                </label>
+              </form>
+
+              <aside class="rounded-lg border border-slate-800 bg-slate-950/50 p-4">
+                <h4 class="text-sm font-semibold text-white">What This Sets</h4>
+                <div id="wizard-preview" class="mt-3 space-y-2 text-xs text-slate-400"></div>
+              </aside>
+            </div>
+
+            <div class="mt-5 flex flex-wrap justify-between gap-2 border-t border-slate-800 pt-4">
+              <button id="wizard-skip" class="rounded-md bg-slate-800 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-700">Skip for now</button>
+              <button id="wizard-apply" class="inline-flex items-center gap-2 rounded-md bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-400">
+                <i data-lucide="check" class="h-4 w-4"></i>
+                Apply Setup
+              </button>
+            </div>
+          </div>
         </div>
 
         <div id="trade-modal" class="fixed inset-0 z-40 hidden items-center justify-center bg-black/60 p-4">
